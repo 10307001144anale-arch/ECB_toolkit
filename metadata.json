@@ -1,0 +1,6 @@
+{
+  "name": "Certificate Template Studio",
+  "description": "Upload certificate backgrounds, auto-detect placeholder boxes with Gemini AI, configure dynamic zones with smart tools, and generate print-ready certificates.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
