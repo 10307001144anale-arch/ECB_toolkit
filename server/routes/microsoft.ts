@@ -23,7 +23,7 @@ function tenant() {
 }
 function redirectUri(): string {
   if (process.env.MS_REDIRECT_URI) return process.env.MS_REDIRECT_URI;
-  const app = (process.env.APP_URL || '').replace(/\/+$/, '');
+  const app = (process.env.APP_URL || process.env.RENDER_EXTERNAL_URL || '').replace(/\/+$/, '');
   return app && !app.includes('MY_APP_URL') ? `${app}/api/integrations/microsoft/callback` : '';
 }
 function scopes(): string {

@@ -1,0 +1,28 @@
+# Render Blueprint for CertiGen. In Render: New → Blueprint → pick this repository.
+services:
+  - type: web
+    name: certigen
+    runtime: node
+    region: singapore          # closest Render region to Bhutan
+    plan: starter              # free plan cannot keep data (no persistent disk)
+    buildCommand: npm install --include=dev && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeploy: true           # every push to main redeploys
+    disk:
+      name: certigen-data      # SQLite database + uploaded template files
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_VERSION
+        value: "24"
+      - key: DATA_DIR
+        value: /var/data
+      - key: TRUST_PROXY
+        value: "true"
+      - key: APP_SECRET
+        generateValue: true    # Render creates a random secret
+      - key: ADMIN_EMAIL
+        sync: false            # you enter these once in the Render dashboard
+      - key: ADMIN_PASSWORD
+        sync: false

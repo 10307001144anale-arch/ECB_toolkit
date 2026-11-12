@@ -10,7 +10,7 @@ export const publicRouter = Router();
 
 publicRouter.get('/config', (_req, res) => {
   res.json({
-    appUrl: (process.env.APP_URL || '').replace(/\/+$/, '') || null,
+    appUrl: (process.env.APP_URL || process.env.RENDER_EXTERNAL_URL || '').replace(/\/+$/, '') || null,
     microsoftConfigured: msConfigured(),
     aiDetectionAvailable: !!process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'MY_GEMINI_API_KEY',
     issuerName: process.env.ISSUER_NAME || null,
