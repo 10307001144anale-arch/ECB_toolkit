@@ -13,7 +13,7 @@ import {
   X,
 } from 'lucide-react';
 import type { CustomFontRef, PhotoBox, QrBox, SignatureBox, TemplateBox, TemplateLayout, TextBox } from '../../../../shared/types';
-import { FONT_FAMILIES, makeKey } from '../../../../shared/layout';
+import { defaultCaption, FONT_FAMILIES, makeKey } from '../../../../shared/layout';
 import { api, fileUrl } from '../../../lib/api';
 import { Button, Field, IconButton, Input, Segmented, Select, Textarea, Toggle, cx } from '../../../components/ui';
 import { BOX_STYLE } from './DesignCanvas';
@@ -203,6 +203,7 @@ export function BoxProperties({ box, layout, published, onChange, onDelete, onDu
       {box.type === 'qr' && <QrSections box={box} set={set} />}
       {box.type === 'photo' && <PhotoSections box={box} set={set} />}
       {box.type === 'signature' && <SignatureSections box={box} set={set} />}
+      {box.type === 'signature' && <SignerSection box={box} fonts={layout.fonts} set={set} />}
     </div>
   );
 }
@@ -288,9 +289,14 @@ function TextSections({ box, fonts, set }: { box: TextBox; fonts: CustomFontRef[
             ]}
           />
         </div>
+        <Toggle
+          checked={box.wrap}
+          onChange={(v) => set({ wrap: v })}
+          label="Wrap text to the next line"
+          description="When the text reaches the edge of the box it continues on the next line, like in other design tools."
+        />
       </Section>
       <Section title="Text options" defaultOpen={false}>
-        <Toggle checked={box.wrap} onChange={(v) => set({ wrap: v })} label="Wrap onto several lines" />
         <Toggle checked={box.multiline} onChange={(v) => set({ multiline: v })} label="Allow line breaks" description="Clients can press Enter to start a new line." />
         <Field label="Text case">
           <Select value={box.transform} onChange={(e) => set({ transform: e.target.value as TextBox['transform'] })}>
@@ -453,7 +459,7 @@ function SignatureSections({ box, set }: { box: SignatureBox; set: (p: Partial<S
           ]}
         />
       </Field>
-      {box.fit === 'contain' && (
+      {(box.fit === 'contain' || box.caption?.enabled) && (
         <Field label="Alignment">
           <Segmented
             size="sm"
@@ -466,6 +472,60 @@ function SignatureSections({ box, set }: { box: SignatureBox; set: (p: Partial<S
             ]}
           />
         </Field>
+      )}
+    </Section>
+  );
+}
+
+function SignerSection({ box, fonts, set }: { box: SignatureBox; fonts: CustomFontRef[]; set: (p: Partial<SignatureBox>) => void }) {
+  const c = box.caption || defaultCaption();
+  const upd = (p: Partial<SignatureBox['caption']>) => set({ caption: { ...c, ...p } });
+  const families = [...new Set([...FONT_FAMILIES, ...fonts.map((f) => f.family)])];
+  return (
+    <Section title="Signer name">
+      <Toggle
+        checked={c.enabled}
+        onChange={(v) => upd({ enabled: v })}
+        label="Show the signer's name under the signature"
+        description="Prints a signature line, the name of the person signing and (optionally) their title, attached to this box."
+      />
+      {c.enabled && (
+        <>
+          <Field label="Name of the person signing" htmlFor="bp-signer-name">
+            <Input id="bp-signer-name" value={c.name} maxLength={120} placeholder="e.g. Karma Wangchuk" onChange={(e) => upd({ name: e.target.value })} />
+          </Field>
+          <Field label="Title / designation" htmlFor="bp-signer-title" optional>
+            <Input id="bp-signer-title" value={c.title} maxLength={160} placeholder="e.g. Director" onChange={(e) => upd({ title: e.target.value })} />
+          </Field>
+          <Toggle checked={c.clientEditable} onChange={(v) => upd({ clientEditable: v })} label="Clients can change the name and title" description="Useful when the client uploads or draws their own signature." />
+          <Toggle checked={c.showLine} onChange={(v) => upd({ showLine: v })} label="Signature line" />
+          <Field label="Font">
+            <Select value={c.fontFamily} onChange={(e) => upd({ fontFamily: e.target.value })}>
+              {families.map((f) => (
+                <option key={f} value={f}>
+                  {f}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <div className="flex items-end gap-2">
+            <Field label="Name size">
+              <NumberInput label="Signer name size" value={c.fontSize} min={4} max={72} step={0.5} suffix="pt" onChange={(v) => upd({ fontSize: v })} />
+            </Field>
+            <Segmented
+              size="sm"
+              ariaLabel="Signer name weight"
+              value={c.bold ? '700' : '400'}
+              onChange={(v) => upd({ bold: v === '700' })}
+              options={[
+                { value: '400', label: 'Regular' },
+                { value: '700', label: <b>Bold</b> },
+              ]}
+            />
+            <ColorInput label="Signer name colour" value={c.color} onChange={(v) => upd({ color: v })} />
+          </div>
+          <p className="text-xs text-slate-500">The name and title are placed at the bottom of the box and follow the box alignment. Make the box taller to give the signature more room.</p>
+        </>
       )}
     </Section>
   );

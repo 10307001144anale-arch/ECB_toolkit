@@ -95,6 +95,25 @@ export interface SignatureBox extends BoxBase {
   fixedSignatureFileId: string | null;
   fit: 'contain' | 'stretch';
   align: HAlign;
+  /** Name (and title) of the person signing, printed under the signature. */
+  caption: SignerCaption;
+}
+
+export interface SignerCaption {
+  enabled: boolean;
+  /** Default signer name, e.g. "Karma Wangchuk". */
+  name: string;
+  /** Designation, e.g. "Director". Optional. */
+  title: string;
+  /** Clients may change the name/title for their batch. */
+  clientEditable: boolean;
+  fontFamily: string;
+  /** Name size in pt (the title is drawn at 85%). */
+  fontSize: number;
+  bold: boolean;
+  color: string;
+  /** Draw a signature line between the signature and the name. */
+  showLine: boolean;
 }
 
 export type TemplateBox = TextBox | QrBox | PhotoBox | SignatureBox;
@@ -183,6 +202,9 @@ export interface SignatureContent {
   scale: number;
   offsetX: number;
   offsetY: number;
+  /** Client's signer name / title (undefined = use the administrator's). */
+  signerName?: string;
+  signerTitle?: string;
 }
 
 export interface PhotoContent {

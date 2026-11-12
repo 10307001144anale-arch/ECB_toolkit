@@ -309,13 +309,15 @@ export default function TemplateDesigner({ id }: { id: string }) {
       const texts: Record<string, string> = {};
       const qr: Record<string, string> = {};
       const images: Record<string, Blob | null> = {};
+      const signers: Record<string, { name: string; title: string }> = {};
       for (const b of clean.boxes) {
+        if (b.type === 'signature' && b.caption.enabled) signers[b.key] = { name: b.caption.name || 'Signer name', title: b.caption.title };
         if (b.type === 'text') texts[b.key] = b.defaultText || (b.multiline ? `${b.label}\nSecond line of sample text` : `Sample: ${b.label}`);
         if (b.type === 'qr') qr[b.key] = `${window.location.origin}/verify/CG-SAMP-LE00-0000`;
         if (b.type === 'signature') images[b.key] = renderer.fixedSignature(b.key);
         if (b.type === 'photo') images[b.key] = null;
       }
-      const { bytes } = await renderer.renderSingle({ texts, qr, images }, { placeholders: true });
+      const { bytes } = await renderer.renderSingle({ texts, qr, images, signers }, { placeholders: true });
       const canvas = await renderPdfPage(bytes, page, 1600, undefined, 1);
       setPreview({ url: canvas.toDataURL('image/png'), page });
     } catch (e: any) {

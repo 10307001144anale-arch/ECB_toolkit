@@ -6,10 +6,11 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { CheckCircle2, CircleAlert, ImagePlus, PenLine, Upload, UserSquare2 } from 'lucide-react';
-import { Alert, Badge, Button, Card, Field, Segmented, Select, Spinner, cx } from '../../../components/ui';
+import { Alert, Badge, Button, Card, Field, Input, Segmented, Select, Spinner, cx } from '../../../components/ui';
 import { useToast } from '../../../context/ToastContext';
 import { ImageLibrary, MAX_IMAGE_BYTES, prepareImage, readImageFiles, trimSignature } from '../../../engine/images';
-import { findPhoto } from '../../../engine/batch';
+import { findPhoto, signerFor } from '../../../engine/batch';
+import { signatureSplit, type SignatureSplit } from '../../../../shared/layout';
 import { fileUrl } from '../../../lib/api';
 import type { PhotoBox, SignatureBox, SignatureContent } from '../../../../shared/types';
 import { SignaturePad } from './SignaturePad';
@@ -274,6 +275,8 @@ function SignatureCard({ w, set, box }: Pick<StepProps, 'w' | 'set'> & { box: Si
         {!allowFixed && box.source === 'fixed' && <Alert tone="warning">The administrator has not uploaded the signature for this box yet.</Alert>}
       </div>
 
+      {box.caption?.enabled && s.mode !== 'none' && <SignerFields box={box} s={s} onChange={patch} />}
+
       {s.mode === 'single' && (
         <div className="mt-4 grid gap-5 border-t border-slate-100 pt-4 lg:grid-cols-2">
           <div className="space-y-3">
@@ -371,7 +374,10 @@ function SignaturePlacementEditor({ w, box, blob, s, onChange }: { w: StepProps[
   const [url, setUrl] = useState<string | null>(null);
   const page = w.renderer?.pageSize(box.page) || { width: 842, height: 595 };
   const wPt = (box.w / 100) * page.width;
-  const hPt = (box.h / 100) * page.height;
+  const boxHpt = (box.h / 100) * page.height;
+  const signer = signerFor(box, s);
+  const split = signer ? signatureSplit(box, boxHpt, !!signer.title) : null;
+  const hPt = split ? Math.max(1, split.imageH) : boxHpt;
   useEffect(() => {
     let alive = true;
     let u: string | null = null;
@@ -390,10 +396,55 @@ function SignaturePlacementEditor({ w, box, blob, s, onChange }: { w: StepProps[
   return (
     <div className="space-y-3">
       <p className="text-sm font-medium text-slate-700">How it fits in the signature box</p>
-      <div className="checkerboard relative w-full overflow-hidden rounded border border-dashed border-brand-400" style={{ aspectRatio: `${wPt} / ${hPt}` }}>
-        {url && <img src={url} alt="Signature preview" className="absolute inset-0 h-full w-full" />}
+      <div className="checkerboard relative w-full overflow-hidden rounded border border-dashed border-brand-400" style={{ aspectRatio: `${wPt} / ${boxHpt}` }}>
+        {url && <img src={url} alt="Signature preview" className="absolute inset-x-0 top-0 w-full" style={{ height: `${(hPt / boxHpt) * 100}%` }} />}
+        {split && signer && <SignerPreview box={box} split={split} signer={signer} boxHpt={boxHpt} />}
       </div>
       <SizeControls s={s} onChange={onChange} />
+    </div>
+  );
+}
+
+function SignerFields({ box, s, onChange }: { box: SignatureBox; s: SignatureContent; onChange: (p: Partial<SignatureContent>) => void }) {
+  const c = box.caption;
+  const name = s.signerName ?? c.name;
+  const title = s.signerTitle ?? c.title;
+  if (!c.clientEditable || s.mode === 'fixed') {
+    return (
+      <p className="mt-4 border-t border-slate-100 pt-4 text-sm text-slate-600">
+        Printed under the signature: <b>{c.name || '—'}</b>
+        {c.title ? `, ${c.title}` : ''} <span className="text-xs text-slate-400">(set by your administrator)</span>
+      </p>
+    );
+  }
+  return (
+    <div className="mt-4 grid gap-3 border-t border-slate-100 pt-4 sm:grid-cols-2">
+      <Field label="Name of the person signing" htmlFor={`signer-${box.key}`} hint="Printed under the signature.">
+        <Input id={`signer-${box.key}`} value={name} maxLength={120} placeholder="e.g. Karma Wangchuk" onChange={(e) => onChange({ signerName: e.target.value })} />
+      </Field>
+      <Field label="Title / designation" htmlFor={`signer-title-${box.key}`} optional>
+        <Input id={`signer-title-${box.key}`} value={title} maxLength={160} placeholder="e.g. Director" onChange={(e) => onChange({ signerTitle: e.target.value })} />
+      </Field>
+      {(s.signerName !== undefined || s.signerTitle !== undefined) && (c.name || c.title) && (
+        <button type="button" className="text-left text-xs font-medium text-brand-700 hover:underline sm:col-span-2" onClick={() => onChange({ signerName: undefined, signerTitle: undefined })}>
+          Use the administrator's name ({[c.name, c.title].filter(Boolean).join(', ')})
+        </button>
+      )}
+    </div>
+  );
+}
+
+function SignerPreview({ box, split, signer, boxHpt }: { box: SignatureBox; split: SignatureSplit; signer: { name: string; title: string }; boxHpt: number }) {
+  const c = box.caption;
+  const pct = (v: number) => `${(v / boxHpt) * 100}%`;
+  const just = box.align === 'left' ? 'flex-start' : box.align === 'right' ? 'flex-end' : 'center';
+  // Font sizes relative to the preview height via container query units.
+  const row = { position: 'absolute' as const, left: 0, right: 0, display: 'flex', justifyContent: just, whiteSpace: 'nowrap' as const, overflow: 'hidden', color: c.color, lineHeight: 1.15 };
+  return (
+    <div className="pointer-events-none absolute inset-0" style={{ containerType: 'size' }}>
+      {split.lineY !== null && <div style={{ position: 'absolute', top: pct(split.lineY), left: box.align === 'left' ? 0 : box.align === 'right' ? '10%' : '5%', width: '90%', borderTop: `1px solid ${c.color}` }} />}
+      {signer.name && <div style={{ ...row, top: pct(split.nameTop), fontSize: `${(split.nameSize / boxHpt) * 100}cqh`, fontWeight: c.bold ? 700 : 400 }}>{signer.name}</div>}
+      {signer.title && <div style={{ ...row, top: pct(split.titleTop), fontSize: `${(split.titleSize / boxHpt) * 100}cqh` }}>{signer.title}</div>}
     </div>
   );
 }

@@ -10,6 +10,7 @@ import type {
   PhotoBox,
   QrBox,
   SignatureBox,
+  SignerCaption,
   TemplateBox,
   TemplateLayout,
   TextBox,
@@ -101,8 +102,69 @@ export function newBox(type: BoxType, id: string, rect: { page: number; x: numbe
     case 'photo':
       return { ...base, type: 'photo', required: false, fit: 'cover', align: 'center', shape: 'rectangle', borderColor: '#ffffff', borderWidth: 0 };
     case 'signature':
-      return { ...base, type: 'signature', required: false, source: 'either', fixedSignatureFileId: null, fit: 'contain', align: 'center' };
+      return { ...base, type: 'signature', required: false, source: 'either', fixedSignatureFileId: null, fit: 'contain', align: 'center', caption: defaultCaption() };
   }
+}
+
+// --------------------------------------------------------------------------- signer caption
+
+export function defaultCaption(): SignerCaption {
+  return { enabled: false, name: '', title: '', clientEditable: true, fontFamily: 'Helvetica', fontSize: 11, bold: true, color: '#1f2937', showLine: true };
+}
+
+function sanitizeCaption(c: any): SignerCaption {
+  const d = defaultCaption();
+  return {
+    enabled: bool(c?.enabled, d.enabled),
+    name: str(c?.name, '', 120),
+    title: str(c?.title, '', 160),
+    clientEditable: bool(c?.clientEditable, d.clientEditable),
+    fontFamily: str(c?.fontFamily, d.fontFamily, 60) || d.fontFamily,
+    fontSize: num(c?.fontSize, d.fontSize, 4, 72),
+    bold: bool(c?.bold, d.bold),
+    color: hex(c?.color, d.color),
+    showLine: bool(c?.showLine, d.showLine),
+  };
+}
+
+export interface SignatureSplit {
+  /** Height (pt) left for the signature image, at the top of the box. */
+  imageH: number;
+  /** Caption block: line position and the two text lines (pt from the box top). */
+  lineY: number | null;
+  nameTop: number;
+  nameSize: number;
+  titleTop: number;
+  titleSize: number;
+}
+
+/**
+ * Splits a signature box into the signature area (top) and the signer
+ * caption (bottom). Used by the PDF renderer, the designer and the client
+ * preview so they always agree. Fonts shrink if the box is too small.
+ */
+export function signatureSplit(box: SignatureBox, boxH: number, hasTitle: boolean): SignatureSplit | null {
+  const c = box.caption;
+  if (!c?.enabled) return null;
+  let nameSize = c.fontSize;
+  const titleRatio = 0.85;
+  const block = (n: number) => {
+    const gap = c.showLine ? n * 0.45 : n * 0.2;
+    return gap + n * 1.2 + (hasTitle ? n * titleRatio * 1.2 : 0);
+  };
+  // The caption may use at most 60% of the box.
+  while (nameSize > 4 && block(nameSize) > boxH * 0.6) nameSize -= 0.5;
+  const captionH = block(nameSize);
+  const imageH = Math.max(0, boxH - captionH);
+  const gap = c.showLine ? nameSize * 0.45 : nameSize * 0.2;
+  return {
+    imageH,
+    lineY: c.showLine ? imageH + nameSize * 0.15 : null,
+    nameTop: imageH + gap,
+    nameSize,
+    titleTop: imageH + gap + nameSize * 1.2,
+    titleSize: nameSize * titleRatio,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -229,6 +291,7 @@ export function sanitizeLayout(input: any): TemplateLayout {
         fixedSignatureFileId: source === 'client' ? null : fileId(b?.fixedSignatureFileId),
         fit: oneOf(b?.fit, ['contain', 'stretch'] as const, 'contain'),
         align: oneOf(b?.align, ['left', 'center', 'right'] as const, 'center'),
+        caption: sanitizeCaption(b?.caption),
       };
       boxes.push(box);
     }

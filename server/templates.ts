@@ -155,6 +155,8 @@ export function sanitizeContent(input: any): ContentConfig {
       scale: n(v?.scale, 1, 0.3, 1),
       offsetX: n(v?.offsetX, 0, -1, 1),
       offsetY: n(v?.offsetY, 0, -1, 1),
+      ...(typeof v?.signerName === 'string' ? { signerName: cleanText(v.signerName, 120) } : {}),
+      ...(typeof v?.signerTitle === 'string' ? { signerTitle: cleanText(v.signerTitle, 160) } : {}),
     };
   }
   for (const [k, v] of Object.entries(src.photos || {}).slice(0, 50) as [string, any][]) {

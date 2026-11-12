@@ -21,6 +21,8 @@ import type {
   PlaceholderType,
   TemplateLayout,
   TextBox,
+  SignatureBox,
+  SignatureContent,
 } from '../../shared/types';
 import type { ImageLibrary } from './images';
 import type { ResolvedCertificate } from './renderer';
@@ -417,9 +419,22 @@ export function resolveCertificate(
       cert.images[b.key] = sigBlob(ctx, b.key, row, fixedSignature).blob;
       const sc = ctx.content.signatures[b.key];
       if (sc) (cert.placements ||= {})[b.key] = { scale: sc.scale ?? 1, offsetX: sc.offsetX ?? 0, offsetY: sc.offsetY ?? 0 };
+      const signer = signerFor(b, sc);
+      if (signer) (cert.signers ||= {})[b.key] = signer;
     }
   }
   return cert;
+}
+
+/** Name/title printed under a signature (client's override, else the administrator's). */
+export function signerFor(box: SignatureBox, sc: SignatureContent | undefined): { name: string; title: string } | null {
+  const c = box.caption;
+  if (!c?.enabled || sc?.mode === 'none') return null;
+  // The administrator's own signature always keeps the administrator's signer name.
+  const own = c.clientEditable && sc?.mode !== 'fixed';
+  const name = (own && sc?.signerName !== undefined ? sc.signerName : c.name).trim();
+  const title = (own && sc?.signerTitle !== undefined ? sc.signerTitle : c.title).trim();
+  return name || title ? { name, title } : null;
 }
 
 /** Content shown while the client is still writing (placeholders visible as typed). */
@@ -434,6 +449,8 @@ export function draftCertificate(layout: TemplateLayout, content: ContentConfig,
       const s = content.signatures[b.key];
       cert.images[b.key] = s?.mode === 'fixed' ? fixedSignature(b.key) : s?.mode === 'single' && images ? images.find(s.fileName)?.blob || null : null;
       if (s) (cert.placements ||= {})[b.key] = { scale: s.scale ?? 1, offsetX: s.offsetX ?? 0, offsetY: s.offsetY ?? 0 };
+      const signer = signerFor(b, s);
+      if (signer) (cert.signers ||= {})[b.key] = signer;
     } else cert.images[b.key] = null;
   }
   return cert;

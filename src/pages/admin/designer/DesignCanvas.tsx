@@ -3,7 +3,9 @@
 
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ImageIcon, PenLine, QrCode, Type } from 'lucide-react';
-import type { BoxType, TemplateBox, TemplateLayout } from '../../../../shared/types';
+import type { BoxType, SignatureBox, TemplateBox, TemplateLayout, TextBox } from '../../../../shared/types';
+import { signatureSplit } from '../../../../shared/layout';
+import { applyTransform, TEXT_PADDING } from '../../../engine/textLayout';
 import { fileUrl } from '../../../lib/api';
 import { cx } from '../../../components/ui';
 
@@ -228,28 +230,9 @@ export function DesignCanvas({ layout, page, zoom, onFitScale, tool, selectedId,
                   {b.label}
                   {b.required && b.type === 'text' ? ' *' : ''}
                 </span>
-                {!previewUrl && b.type === 'text' && (
-                  <div
-                    className="pointer-events-none flex h-full w-full overflow-hidden px-0.5"
-                    style={{
-                      alignItems: b.vAlign === 'top' ? 'flex-start' : b.vAlign === 'bottom' ? 'flex-end' : 'center',
-                      justifyContent: b.align === 'left' ? 'flex-start' : b.align === 'right' ? 'flex-end' : 'center',
-                    }}
-                  >
-                    <span
-                      className={cx('truncate', b.defaultText ? 'opacity-80' : 'italic opacity-40')}
-                      style={{
-                        fontFamily: `"${b.fontFamily === 'Times' ? 'Times New Roman' : b.fontFamily}", sans-serif`,
-                        fontWeight: Number(b.fontWeight),
-                        color: b.color,
-                        fontSize: Math.max(6, (b.autoFit ? b.maxFontSize : b.fontSize) * scale * 0.85),
-                      }}
-                    >
-                      {b.defaultText ? b.defaultText.replace(/\s*\n\s*/g, ' ') : b.label}
-                    </span>
-                  </div>
-                )}
-                {!previewUrl && b.type !== 'text' && (
+                {!previewUrl && b.type === 'text' && <CanvasText box={b} scale={scale} />}
+                {!previewUrl && b.type === 'signature' && b.caption?.enabled && <CanvasSigner box={b} scale={scale} boxHpt={(b.h / 100) * pg.height} />}
+                {!previewUrl && b.type !== 'text' && !(b.type === 'signature' && b.caption?.enabled) && (
                   <div className="pointer-events-none flex h-full w-full items-center justify-center text-slate-500/70">{React.cloneElement(st.icon as React.ReactElement<any>, { className: 'h-5 w-5' })}</div>
                 )}
                 {selected &&
@@ -274,6 +257,104 @@ export function DesignCanvas({ layout, page, zoom, onFitScale, tool, selectedId,
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- text inside a box
+
+const CSS_FONT: Record<string, string> = { Helvetica: 'LiberationSans', Times: 'LiberationSerif', Courier: 'LiberationMono' };
+
+/**
+ * Text drawn the way a design tool does: it wraps at the box edge, follows the
+ * horizontal / vertical alignment, and (with "Fit text automatically") shrinks
+ * between the maximum and minimum size until it fits — matching the PDF.
+ */
+function CanvasText({ box, scale }: { box: TextBox; scale: number }) {
+  const outer = useRef<HTMLDivElement>(null);
+  const inner = useRef<HTMLDivElement>(null);
+  const placeholder = !box.defaultText;
+  const raw = placeholder ? box.label : box.defaultText;
+  const text = applyTransform(box.multiline ? raw : raw.replace(/\s*\r?\n\s*/g, ' '), box.transform);
+  const maxPt = box.autoFit ? box.maxFontSize : box.fontSize;
+  const minPt = box.autoFit ? Math.min(box.minFontSize, box.maxFontSize) : box.fontSize;
+  const [pt, setPt] = useState(maxPt);
+  const [overflow, setOverflow] = useState(false);
+  const family = CSS_FONT[box.fontFamily] || box.fontFamily;
+  const pad = TEXT_PADDING * scale;
+
+  useLayoutEffect(() => {
+    const o = outer.current;
+    const i = inner.current;
+    if (!o || !i) return;
+    const fitsAt = (size: number) => {
+      i.style.fontSize = `${size * scale}px`;
+      return i.scrollHeight <= o.clientHeight - 2 * pad + 0.5 && i.scrollWidth <= o.clientWidth - 2 * pad + 0.5;
+    };
+    let size = maxPt;
+    if (box.autoFit) {
+      while (size > minPt && !fitsAt(size)) size = Math.max(minPt, Math.round((size - 0.5) * 2) / 2);
+    }
+    const ok = fitsAt(size);
+    setPt(size);
+    setOverflow(!ok);
+  }, [text, box, scale, maxPt, minPt, pad]);
+
+  // Re-measure once the certificate fonts have loaded.
+  const [, bump] = useState(0);
+  useEffect(() => {
+    document.fonts?.ready.then(() => bump((n) => n + 1));
+  }, []);
+
+  return (
+    <div
+      ref={outer}
+      className={cx('pointer-events-none absolute inset-0 flex flex-col overflow-hidden', overflow && 'bg-red-500/10')}
+      style={{ padding: pad, justifyContent: box.vAlign === 'top' ? 'flex-start' : box.vAlign === 'bottom' ? 'flex-end' : 'center' }}
+      title={overflow ? 'This text does not fit in the box' : undefined}
+    >
+      <div
+        ref={inner}
+        className={placeholder ? 'italic opacity-40' : 'opacity-90'}
+        style={{
+          fontFamily: `"${family}", "${box.fontFamily}", sans-serif`,
+          fontWeight: Number(box.fontWeight),
+          fontStyle: box.italic && !placeholder ? 'italic' : undefined,
+          color: box.color,
+          fontSize: pt * scale,
+          lineHeight: box.lineHeight,
+          letterSpacing: box.letterSpacing ? box.letterSpacing * scale : undefined,
+          textAlign: box.align,
+          whiteSpace: box.wrap ? (box.multiline ? 'pre-wrap' : 'normal') : box.multiline ? 'pre' : 'nowrap',
+          overflowWrap: box.wrap ? 'anywhere' : undefined,
+          width: '100%',
+        }}
+      >
+        {text}
+      </div>
+    </div>
+  );
+}
+
+/** Signature box with the signer's line, name and title, as they will be printed. */
+function CanvasSigner({ box, scale, boxHpt }: { box: SignatureBox; scale: number; boxHpt: number }) {
+  const c = box.caption;
+  const name = c.name || 'Signer name';
+  const sp = signatureSplit(box, boxHpt, !!c.title);
+  if (!sp) return null;
+  const family = CSS_FONT[c.fontFamily] || c.fontFamily;
+  const just = box.align === 'left' ? 'flex-start' : box.align === 'right' ? 'flex-end' : 'center';
+  const lineStyle = { position: 'absolute' as const, left: 0, right: 0, display: 'flex', justifyContent: just, whiteSpace: 'nowrap' as const, overflow: 'hidden', color: c.color, fontFamily: `"${family}", "${c.fontFamily}", sans-serif` };
+  return (
+    <div className="pointer-events-none absolute inset-0">
+      <div className="absolute inset-x-0 top-0 flex items-center justify-center text-slate-500/70" style={{ height: sp.imageH * scale }}>
+        <PenLine className="h-5 w-5" />
+      </div>
+      {sp.lineY !== null && (
+        <div style={{ position: 'absolute', top: sp.lineY * scale, left: box.align === 'left' ? 0 : box.align === 'right' ? '10%' : '5%', width: '90%', borderTop: `${Math.max(1, sp.nameSize * 0.06 * scale)}px solid ${c.color}` }} />
+      )}
+      <div style={{ ...lineStyle, top: sp.nameTop * scale, fontSize: sp.nameSize * scale, lineHeight: 1.15, fontWeight: c.bold ? 700 : 400, opacity: c.name ? 1 : 0.5 }}>{name}</div>
+      {c.title && <div style={{ ...lineStyle, top: sp.titleTop * scale, fontSize: sp.titleSize * scale, lineHeight: 1.15 }}>{c.title}</div>}
     </div>
   );
 }

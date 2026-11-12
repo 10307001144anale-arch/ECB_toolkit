@@ -22,6 +22,7 @@ import {
 } from 'pdf-lib';
 import QRCode from 'qrcode';
 import type { PhotoBox, PhotoCrop, QrBox, SignatureBox, TemplateLayout, TextBox } from '../../shared/types';
+import { signatureSplit, type SignatureSplit } from '../../shared/layout';
 import { FontEmbedder, registerBrowserFont, type EmbeddedFont, type FileFetcher } from './fonts';
 import { layoutText, TEXT_PADDING, type Measurer } from './textLayout';
 import { autoCrop, detectFocus, prepareImage, type SignaturePlacement } from './images';
@@ -37,6 +38,8 @@ export interface ResolvedCertificate {
   crops?: Record<string, PhotoCrop | undefined>;
   /** Client size/position of each signature inside its box. */
   placements?: Record<string, SignaturePlacement | undefined>;
+  /** Signer name / title printed under each signature. */
+  signers?: Record<string, { name: string; title: string } | undefined>;
 }
 
 export interface RenderWarning {
@@ -226,14 +229,23 @@ export class CertificateRenderer {
           if (value && value.trim()) this.drawQr(page, box, rect, value);
         } else {
           const blob = cert.images[box.key];
-          if (blob) await this.drawImageBox(ctx, page, box, rect, blob, cert);
-          else if (opts.placeholders) {
+          let imgRect = rect;
+          if (box.type === 'signature') {
+            const signer = cert.signers?.[box.key];
+            const split = signer ? signatureSplit(box, rect.h, !!signer.title) : null;
+            if (signer && split) {
+              warnings.push(...(await this.drawSignerCaption(ctx, page, box, rect, split, signer)));
+              imgRect = { ...rect, h: split.imageH };
+            }
+          }
+          if (blob && imgRect.h > 1) await this.drawImageBox(ctx, page, box, imgRect, blob, cert);
+          else if (opts.placeholders && imgRect.h > 1) {
             // Preview only: show where the image will go.
             page.drawRectangle({
-              x: rect.x,
-              y: rect.top - rect.h,
-              width: rect.w,
-              height: rect.h,
+              x: imgRect.x,
+              y: imgRect.top - imgRect.h,
+              width: imgRect.w,
+              height: imgRect.h,
               color: rgb(0.94, 0.95, 0.97),
               opacity: 0.85,
               borderColor: rgb(0.58, 0.64, 0.72),
@@ -379,6 +391,61 @@ export class CertificateRenderer {
       }
     }
     page.drawSvgPath(path, { x: x0, y: yTop, scale: unit, color: hexColor(box.fgColor), borderWidth: 0 });
+  }
+
+  /** Signature line, signer name and title under the signature. */
+  private async drawSignerCaption(
+    ctx: DocContext,
+    page: PDFPage,
+    box: SignatureBox,
+    rect: { x: number; top: number; w: number; h: number },
+    split: SignatureSplit,
+    signer: { name: string; title: string }
+  ): Promise<RenderWarning[]> {
+    const c = box.caption;
+    const warnings: RenderWarning[] = [];
+    if (split.lineY !== null) {
+      const lw = rect.w * 0.9;
+      const x0 = box.align === 'left' ? rect.x : box.align === 'right' ? rect.x + rect.w - lw : rect.x + (rect.w - lw) / 2;
+      const y = rect.top - split.lineY;
+      page.drawLine({ start: { x: x0, y }, end: { x: x0 + lw, y }, thickness: Math.max(0.4, split.nameSize * 0.06), color: hexColor(c.color) });
+    }
+    const line = (text: string, top: number, size: number, bold: boolean, suffix: string) => {
+      const tb: TextBox = {
+        id: `${box.id}_${suffix}`,
+        type: 'text',
+        key: `${box.key}_${suffix}`,
+        label: suffix === 'name' ? `${box.label} – signer name` : `${box.label} – signer title`,
+        description: '',
+        required: false,
+        page: box.page,
+        x: 0,
+        y: 0,
+        w: 0,
+        h: 0,
+        defaultText: '',
+        fontFamily: c.fontFamily,
+        fontWeight: bold ? '700' : '400',
+        italic: false,
+        color: c.color,
+        align: box.align,
+        vAlign: 'top',
+        wrap: false,
+        multiline: false,
+        autoFit: true,
+        fontSize: size,
+        minFontSize: Math.min(size, 5),
+        maxFontSize: size,
+        lineHeight: 1.15,
+        letterSpacing: 0,
+        transform: 'none',
+        maxChars: null,
+      };
+      return this.drawText(ctx, page, tb, { x: rect.x, top: rect.top - top + TEXT_PADDING, w: rect.w, h: size * 1.2 + TEXT_PADDING * 2 }, text);
+    };
+    if (signer.name) warnings.push(...(await line(signer.name, split.nameTop, split.nameSize, c.bold, 'name')));
+    if (signer.title) warnings.push(...(await line(signer.title, split.titleTop, split.titleSize, false, 'title')));
+    return warnings;
   }
 
   private async drawImageBox(
