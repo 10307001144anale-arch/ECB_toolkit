@@ -27,7 +27,7 @@ function Routes() {
   const verify = matchPath('/verify/:id', path);
   if (verify) return <VerifyPage id={verify.id} />;
   if (path === '/verify') return <VerifyPage id={null} />;
-  if (path === '/oauth/microsoft') return <OAuthCompletePage />;
+  if (path === '/oauth/complete' || path === '/oauth/microsoft') return <OAuthCompletePage />;
 
   if (loading) return <Spinner className="min-h-screen" />;
 

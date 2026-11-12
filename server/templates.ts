@@ -147,7 +147,15 @@ export function sanitizeContent(input: any): ContentConfig {
   for (const [k, v] of Object.entries(src.signatures || {}).slice(0, 50) as [string, any][]) {
     if (!keyOk(k)) continue;
     const mode = ['fixed', 'single', 'column', 'none'].includes(v?.mode) ? v.mode : 'none';
-    signatures[k] = { mode, column: cleanColumn(v?.column), fileName: cleanColumn(v?.fileName) };
+    const n = (x: unknown, d: number, lo: number, hi: number) => (Number.isFinite(Number(x)) ? Math.min(hi, Math.max(lo, Number(x))) : d);
+    signatures[k] = {
+      mode,
+      column: cleanColumn(v?.column),
+      fileName: cleanColumn(v?.fileName),
+      scale: n(v?.scale, 1, 0.3, 1),
+      offsetX: n(v?.offsetX, 0, -1, 1),
+      offsetY: n(v?.offsetY, 0, -1, 1),
+    };
   }
   for (const [k, v] of Object.entries(src.photos || {}).slice(0, 50) as [string, any][]) {
     if (!keyOk(k)) continue;
@@ -170,5 +178,6 @@ export function sanitizeMapping(input: any): MappingConfig {
   return {
     placeholders,
     recipientColumn: typeof src.recipientColumn === 'string' ? src.recipientColumn.slice(0, 200) : null,
+    idColumn: typeof src.idColumn === 'string' ? src.idColumn.slice(0, 200) : null,
   };
 }

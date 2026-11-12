@@ -237,7 +237,7 @@ export function DesignCanvas({ layout, page, zoom, onFitScale, tool, selectedId,
                     }}
                   >
                     <span
-                      className="truncate italic opacity-40"
+                      className={cx('truncate', b.defaultText ? 'opacity-80' : 'italic opacity-40')}
                       style={{
                         fontFamily: `"${b.fontFamily === 'Times' ? 'Times New Roman' : b.fontFamily}", sans-serif`,
                         fontWeight: Number(b.fontWeight),
@@ -245,7 +245,7 @@ export function DesignCanvas({ layout, page, zoom, onFitScale, tool, selectedId,
                         fontSize: Math.max(6, (b.autoFit ? b.maxFontSize : b.fontSize) * scale * 0.85),
                       }}
                     >
-                      {b.label}
+                      {b.defaultText ? b.defaultText.replace(/\s*\n\s*/g, ' ') : b.label}
                     </span>
                   </div>
                 )}

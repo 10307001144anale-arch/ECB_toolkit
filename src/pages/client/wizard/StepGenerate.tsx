@@ -8,6 +8,7 @@ import type { BatchRecord, ContentPreset } from '../../../../shared/types';
 import { makeFileNames, resolveCertificate } from '../../../engine/batch';
 import { downloadBlob, downloadZip, runGeneration, safeFileBase, type GenerationProgress, type GenerationResult } from '../../../engine/generate';
 import { listOutputs, RETENTION_DAYS } from '../../../engine/localStore';
+import { clearPreparedImages } from '../../../engine/images';
 import { formatDuration } from '../../../lib/format';
 import type { StepProps } from './state';
 
@@ -83,6 +84,8 @@ export function StepGenerate({ w, d, set, onNewBatch }: StepProps & { onNewBatch
       setError(e.message);
       if (!outcome) set({ generatedBatchId: null });
     } finally {
+      // Release processed photo/signature memory after a large run.
+      clearPreparedImages();
       setRunning(false);
     }
   };
@@ -150,9 +153,12 @@ export function StepGenerate({ w, d, set, onNewBatch }: StepProps & { onNewBatch
               {error}
             </Alert>
           )}
-          <Button variant="primary" size="lg" className="mt-5 w-full" icon={<PlayCircle className="h-5 w-5" />} onClick={start} disabled={total === 0}>
+          <Button variant="primary" size="lg" className="mt-5 w-full" icon={<PlayCircle className="h-5 w-5" />} onClick={start} disabled={total === 0 || (d.errorRows.length > 0 && !w.confirmSkipErrors)}>
             Generate {total.toLocaleString()} certificate{total === 1 ? '' : 's'}
           </Button>
+          {d.errorRows.length > 0 && !w.confirmSkipErrors && total > 0 && (
+            <p className="mt-2 text-center text-sm text-amber-700">Fix the participants with errors above, exclude them, or tick “Skip … with errors”.</p>
+          )}
           <p className="mt-3 text-center text-xs text-slate-500">Certificates are created in your browser. Keep this tab open until it finishes.</p>
         </Card>
       </div>

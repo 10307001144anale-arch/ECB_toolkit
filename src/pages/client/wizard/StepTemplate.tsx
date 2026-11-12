@@ -5,7 +5,7 @@ import { Card, EmptyState, Spinner, cx } from '../../../components/ui';
 import type { ClientTemplate, ContentPreset } from '../../../../shared/types';
 import type { StepProps } from './state';
 
-export function StepTemplate({ w, goTo, onChoose }: StepProps & { onChoose: (t: ClientTemplate, preset?: ContentPreset) => void }) {
+export function StepTemplate({ w, onChoose }: StepProps & { onChoose: (t: ClientTemplate, preset?: ContentPreset) => void }) {
   const [templates, setTemplates] = useState<ClientTemplate[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -23,14 +23,14 @@ export function StepTemplate({ w, goTo, onChoose }: StepProps & { onChoose: (t: 
       <EmptyState
         icon={<LayoutTemplate className="h-6 w-6" />}
         title="No templates available yet"
-        description="Your administrator has not given you access to any published certificate templates. Contact them to get started."
+        description="No certificate templates have been published yet. An administrator can publish one from the admin portal."
       />
     );
 
   return (
     <div>
       <h2 className="mb-1 text-lg font-semibold">Choose a certificate design</h2>
-      <p className="mb-5 text-sm text-slate-600">You will write your own wording on the next step. The design and layout are managed by your administrator.</p>
+      <p className="mb-5 text-sm text-slate-600">Pick a design, then write or adjust the wording. The design and layout are managed by your administrator.</p>
       <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
         {templates.map((t) => {
           const selected = w.template?.id === t.id;
@@ -41,7 +41,6 @@ export function StepTemplate({ w, goTo, onChoose }: StepProps & { onChoose: (t: 
                 className="block w-full text-left"
                 onClick={() => {
                   onChoose(t);
-                  goTo('content');
                 }}
               >
                 <div className="aspect-[1.414] w-full border-b border-slate-100 bg-slate-100">

@@ -42,6 +42,8 @@ export interface BoxBase {
 
 export interface TextBox extends BoxBase {
   type: 'text';
+  /** Optional wording set by the admin. Clients start from it and may keep or change it for their batch. */
+  defaultText: string;
   fontFamily: string;
   fontWeight: '400' | '700';
   italic: boolean;
@@ -173,14 +175,27 @@ export interface QrContent {
 }
 
 export interface SignatureContent {
-  /** fixed = admin signature; single = one uploaded image for everyone; column = per-participant file name column. */
+  /** fixed = admin signature; single = one drawn/uploaded image for everyone; column = per-participant file name column. */
   mode: 'fixed' | 'single' | 'column' | 'none';
   column: string; // spreadsheet column with file names (mode=column)
-  fileName: string; // name of the single uploaded image (mode=single)
+  fileName: string; // name of the single drawn/uploaded image (mode=single)
+  /** Size inside the admin's box (0.3–1) and position of the leftover space (-1 left/top … 1 right/bottom). */
+  scale: number;
+  offsetX: number;
+  offsetY: number;
 }
 
 export interface PhotoContent {
-  column: string; // spreadsheet column with file names
+  /** Spreadsheet column with photo file names. Empty = match photos by the participant ID (e.g. CID) instead. */
+  column: string;
+}
+
+/** Visible part of a photo: centre point (0–1 of the rotated image), zoom (1 = just fills the box) and rotation. */
+export interface PhotoCrop {
+  x: number;
+  y: number;
+  zoom: number;
+  rotate: 0 | 90 | 180 | 270;
 }
 
 export interface ContentConfig {
@@ -202,6 +217,8 @@ export interface MappingConfig {
   placeholders: Record<string, PlaceholderSetting>;
   /** Column used as the recipient name on the public verification page (optional). */
   recipientColumn: string | null;
+  /** Unique participant identifier column (normally CID), used to match photos named e.g. 10701000001.jpg. */
+  idColumn: string | null;
 }
 
 export interface ContentPreset {

@@ -4,6 +4,7 @@ import { db } from '../db.ts';
 import { h, HttpError } from '../http.ts';
 import { canReadFile, getFileMeta, readFileStream } from '../files.ts';
 import { msConfigured } from './microsoft.ts';
+import { googleConfigured } from './google.ts';
 import type { VerificationResult } from '../../shared/types.ts';
 
 export const publicRouter = Router();
@@ -12,6 +13,7 @@ publicRouter.get('/config', (_req, res) => {
   res.json({
     appUrl: (process.env.APP_URL || process.env.RENDER_EXTERNAL_URL || '').replace(/\/+$/, '') || null,
     microsoftConfigured: msConfigured(),
+    googleConfigured: googleConfigured(),
     aiDetectionAvailable: !!process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'MY_GEMINI_API_KEY',
     issuerName: process.env.ISSUER_NAME || null,
   });

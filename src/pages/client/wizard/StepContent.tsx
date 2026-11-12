@@ -1,10 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, BookmarkPlus, Braces, Check, ChevronDown, Info, Save } from 'lucide-react';
+import { AlertTriangle, BookmarkPlus, Braces, Check, ChevronDown, Save, X } from 'lucide-react';
 import { api } from '../../../lib/api';
 import { Alert, Badge, Button, Card, Field, Input, Modal, Select, Textarea, cx } from '../../../components/ui';
 import { useToast } from '../../../context/ToastContext';
 import type { ContentPreset, QrBox, TemplateBox, TextBox } from '../../../../shared/types';
-import { SYSTEM_PLACEHOLDERS, columnToPlaceholder, findPlaceholders, normKey } from '../../../../shared/placeholders';
+import { SYSTEM_PLACEHOLDERS, columnToPlaceholder, findMalformedPlaceholders, findPlaceholders, normKey } from '../../../../shared/placeholders';
 import { draftCertificate, fitContentToLayout } from '../../../engine/batch';
 import { verifyBaseUrl } from '../../../lib/api';
 import { CertificatePreview } from './CertificatePreview';
@@ -228,6 +228,16 @@ function TextBoxEditor({
         {box.required ? <Badge tone="blue">Required</Badge> : <span className="text-xs text-slate-400">Optional</span>}
       </div>
       {box.description && <p className="mb-2 text-xs text-slate-500">{box.description}</p>}
+      {box.defaultText && (
+        <p className="mb-2 flex flex-wrap items-center gap-x-2 text-xs text-slate-500">
+          {value === box.defaultText ? <span>Suggested wording from your administrator — keep it or edit it.</span> : <span>You changed the suggested wording.</span>}
+          {value !== box.defaultText && (
+            <button type="button" className="font-medium text-brand-700 hover:underline" onClick={() => onChange(box.defaultText)}>
+              Use suggested wording
+            </button>
+          )}
+        </p>
+      )}
       <PlaceholderTextarea
         id={`txt-${box.key}`}
         value={value}
@@ -387,21 +397,34 @@ export function PlaceholderTextarea({
         </div>
         {unique.map((t) => {
           const sys = SYSTEM_PLACEHOLDERS[normKey(t.key)];
-          const matched = sys || known.has(t.key) || (hasData && headers.some((h) => columnToPlaceholder(h) === t.key));
+          // Before a spreadsheet is added every valid placeholder counts as recognised;
+          // afterwards, ones without a matching column are highlighted for the "Match columns" step.
+          const inData = hasData && headers.some((h) => columnToPlaceholder(h) === t.key);
+          const recognised = !!sys || !hasData || inData || known.has(t.key);
           return (
             <span
               key={t.key}
               className={cx(
                 'inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 font-mono text-xs ring-1 ring-inset',
-                sys ? 'bg-violet-50 text-violet-700 ring-violet-200' : matched ? 'bg-emerald-50 text-emerald-700 ring-emerald-200' : hasData ? 'bg-amber-50 text-amber-800 ring-amber-200' : 'bg-slate-50 text-slate-700 ring-slate-200'
+                sys ? 'bg-violet-50 text-violet-700 ring-violet-200' : recognised ? 'bg-emerald-50 text-emerald-700 ring-emerald-200' : 'bg-amber-50 text-amber-800 ring-amber-200'
               )}
-              title={sys ? sys.description : matched ? 'Found in your spreadsheet' : hasData ? 'Not found as a column — you can choose a column on the "Match columns" step' : 'Will be matched to a spreadsheet column'}
+              title={sys ? sys.description : !hasData ? 'Recognised. It will be filled from your spreadsheet.' : recognised ? 'Found in your spreadsheet' : 'No column with this name. You can choose a column on the "Match columns" step.'}
             >
-              {matched && !sys ? <Check className="h-3 w-3" /> : !hasData || sys ? <Info className="h-3 w-3" /> : <AlertTriangle className="h-3 w-3" />}
+              {recognised ? <Check className="h-3 w-3" /> : <AlertTriangle className="h-3 w-3" />}
               {t.syntax === 'paren' ? `(${t.name})` : `{{${t.name}}}`}
             </span>
           );
         })}
+        {findMalformedPlaceholders(value).map((m, i) => (
+          <span
+            key={`bad-${i}`}
+            className="inline-flex items-center gap-1 rounded-md bg-red-50 px-1.5 py-0.5 font-mono text-xs text-red-700 ring-1 ring-inset ring-red-200"
+            title="Not a valid placeholder. Use letters, numbers and underscores only, e.g. {{first_name}}."
+          >
+            <X className="h-3 w-3" />
+            {m}
+          </span>
+        ))}
         {maxChars ? <span className="ml-auto text-xs text-slate-400">max {maxChars} characters</span> : null}
       </div>
     </div>

@@ -149,6 +149,21 @@ const MIGRATIONS: string[] = [
     VALUES ('usr_public_guest', 'public@guest.invalid', 'Public (no sign-in)', 'disabled', 'client', NULL, 1, CAST(strftime('%s','now') AS INTEGER) * 1000);
   UPDATE templates SET visibility = 'all' WHERE visibility = 'assigned' AND NOT EXISTS (SELECT 1 FROM template_access a WHERE a.template_id = templates.id);
   `,
+  // 3 — OAuth connections (Microsoft, Google) owned by a user OR an anonymous browser
+  `
+  CREATE TABLE oauth_connections (
+    owner TEXT NOT NULL,
+    provider TEXT NOT NULL CHECK (provider IN ('microsoft','google')),
+    account_name TEXT,
+    access_token_enc TEXT NOT NULL,
+    refresh_token_enc TEXT,
+    expires_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (owner, provider)
+  );
+  INSERT INTO oauth_connections (owner, provider, account_name, access_token_enc, refresh_token_enc, expires_at, updated_at)
+    SELECT 'usr:' || user_id, 'microsoft', account_name, access_token_enc, refresh_token_enc, expires_at, updated_at FROM ms_connections;
+  `,
 ];
 
 /** Built-in client used by visitors who are not signed in. */

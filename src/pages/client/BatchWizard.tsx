@@ -1,4 +1,5 @@
-// Client guided workflow: template → wording → data → mapping → images → preview → generate.
+// Client guided workflow in three steps:
+// 1 Template & wording · 2 Participant data (columns, photos, signatures) · 3 Preview & generate.
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, ArrowRight, Check } from 'lucide-react';
@@ -10,29 +11,23 @@ import type { BatchRecord, ClientTemplate, ContentPreset } from '../../../shared
 import { CertificateRenderer } from '../../engine/renderer';
 import { analysePlaceholders, autoMapping, contentIssues, fitContentToLayout, registeredNames, validateRows, type BatchContext } from '../../engine/batch';
 import { initialState, type Derived, type StepId, type WizardState } from './wizard/state';
-import { StepTemplate } from './wizard/StepTemplate';
-import { StepContent } from './wizard/StepContent';
+import { StepDesign } from './wizard/StepDesign';
 import { StepData } from './wizard/StepData';
-import { StepMapping } from './wizard/StepMapping';
-import { StepImages } from './wizard/StepImages';
 import { StepPreview } from './wizard/StepPreview';
 import { StepGenerate } from './wizard/StepGenerate';
 
 const STEP_LABELS: Record<StepId, string> = {
-  template: 'Select template',
-  content: 'Write wording',
-  data: 'Add participants',
-  mapping: 'Match columns',
-  images: 'Photos & signatures',
-  preview: 'Preview & check',
-  generate: 'Generate',
+  design: 'Template & wording',
+  data: 'Participant data',
+  generate: 'Preview & generate',
 };
+const STEPS: StepId[] = ['design', 'data', 'generate'];
 
 export default function BatchWizard() {
   const { query } = useRouter();
   const { showToast } = useToast();
   const [w, setW] = useState<WizardState>(initialState);
-  const [step, setStep] = useState<StepId>('template');
+  const [step, setStep] = useState<StepId>('design');
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [booting, setBooting] = useState(true);
 
@@ -53,7 +48,8 @@ export default function BatchWizard() {
         rendererError: null,
         content: fitContentToLayout(t.layout, opts?.content ?? null),
         preset: opts?.preset ?? null,
-        mapping: opts?.mapping || { placeholders: {}, recipientColumn: null },
+        mapping: opts?.mapping ? { ...opts.mapping, idColumn: opts.mapping.idColumn ?? null } : { placeholders: {}, recipientColumn: null, idColumn: null },
+        crops: {},
         overflow: new Map(),
         overflowChecked: false,
         batchName: opts?.name || '',
@@ -81,19 +77,19 @@ export default function BatchWizard() {
           const t = await api.get<ClientTemplate>(`/api/client/templates/${batch.templateId}`);
           await chooseTemplate(t, { content: batch.content, mapping: batch.mapping, name: `${batch.name} (copy)` });
           if (t.versionId !== batch.templateVersionId) showToast('The template has been updated since that batch. Check the wording before generating.', 'info');
-          setStep('content');
+          setStep('design');
         } else if (presetId) {
           const presets = await api.get<ContentPreset[]>('/api/client/presets');
           const p = presets.find((x) => x.id === presetId);
           if (p) {
             const t = await api.get<ClientTemplate>(`/api/client/templates/${p.templateId}`);
             await chooseTemplate(t, { content: p.content, preset: p });
-            setStep('content');
+            setStep('design');
           }
         } else if (templateId) {
           const t = await api.get<ClientTemplate>(`/api/client/templates/${templateId}`);
           await chooseTemplate(t);
-          setStep('content');
+          setStep('design');
         }
       } catch (e: any) {
         showToast(e.message, 'error');
@@ -123,6 +119,7 @@ export default function BatchWizard() {
       placeholders,
       registered,
       images: w.images,
+      crops: w.crops,
       hasFixedSignature: (k) => fixedAvailable.has(k),
       verifyBaseUrl: verifyBaseUrl(config),
       today: new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }),
@@ -138,7 +135,7 @@ export default function BatchWizard() {
     return { registered, placeholders, contentIssues: issues, ctx, checks, needsImages, readyRows, errorRows };
     // imagesVersion forces recomputation when the (mutable) image library changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [w.template, w.content, w.data, w.mapping, w.images, w.imagesVersion, w.excluded, config]);
+  }, [w.template, w.content, w.data, w.mapping, w.images, w.imagesVersion, w.crops, w.excluded, config]);
 
   // Re-run automatic matching only when the set of fields or the columns change,
   // so a client's manual choices are kept.
@@ -169,24 +166,17 @@ export default function BatchWizard() {
 
   // ---------------------------------------------------------------- steps
 
-  const steps: StepId[] = useMemo(() => {
-    const s: StepId[] = ['template', 'content', 'data', 'mapping'];
-    if (d.needsImages) s.push('images');
-    s.push('preview', 'generate');
-    return s;
-  }, [d.needsImages]);
-
+  const steps = STEPS;
   const unmapped = d.placeholders.filter((p) => !p.system && !w.mapping.placeholders[p.key]?.column);
   const imageProblems = useMemo(() => {
     const out: string[] = [];
     if (!w.template) return out;
     for (const b of w.template.layout.boxes) {
-      if (b.type === 'photo' && b.required && !w.content.photos[b.key]?.column) out.push(`Choose the column with photo file names for "${b.label}".`);
       if (b.type === 'signature') {
         const s = w.content.signatures[b.key];
         if (!s || s.mode === 'none') {
           if (b.required) out.push(`Choose a signature for "${b.label}".`);
-        } else if (s.mode === 'single' && !w.images.find(s.fileName)) out.push(`Upload the signature image for "${b.label}".`);
+        } else if (s.mode === 'single' && !w.images.find(s.fileName)) out.push(`Draw or upload the signature for "${b.label}".`);
         else if (s.mode === 'column' && !s.column) out.push(`Choose the column with signature file names for "${b.label}".`);
       }
     }
@@ -195,14 +185,19 @@ export default function BatchWizard() {
   }, [w.template, w.content, w.images, w.imagesVersion]);
 
   const blockers: Record<StepId, string | null> = {
-    template: !w.template ? 'Choose a template.' : w.rendererError ? w.rendererError : !w.renderer ? 'Loading the template…' : null,
-    content: d.contentIssues.some((i) => i.level === 'error') ? 'Fix the highlighted wording first.' : null,
-    data: !w.data ? 'Add your participant list.' : null,
-    mapping: unmapped.length ? `Choose a column for ${unmapped.map((p) => `{{${p.name}}}`).join(', ')}.` : null,
-    images: imageProblems[0] || null,
-    preview: d.readyRows.length === 0 ? 'There are no certificates ready to generate.' : d.errorRows.length && !w.confirmSkipErrors ? 'Fix or exclude the rows with errors, or confirm they will be skipped.' : null,
+    design: !w.template
+      ? 'Choose a template.'
+      : w.rendererError
+        ? w.rendererError
+        : !w.renderer
+          ? 'Loading the template…'
+          : d.contentIssues.some((i) => i.level === 'error')
+            ? 'Fix the highlighted wording first.'
+            : null,
+    data: !w.data ? 'Add your participant list.' : unmapped.length ? `Choose a column for ${unmapped.map((p) => `{{${p.name}}}`).join(', ')}.` : imageProblems[0] || null,
     generate: null,
   };
+
 
   const idx = steps.indexOf(step);
   const canReach = (s: StepId) => {
@@ -262,8 +257,8 @@ export default function BatchWizard() {
         </ol>
       </nav>
 
-      {step === 'template' && (
-        <StepTemplate
+      {step === 'design' && (
+        <StepDesign
           {...props}
           onChoose={(t, preset) => {
             if (w.template?.id !== t.id || w.template?.versionId !== t.versionId || preset) {
@@ -272,20 +267,18 @@ export default function BatchWizard() {
           }}
         />
       )}
-      {step !== 'template' && !w.renderer && !w.rendererError && <Spinner label="Loading the template…" />}
-      {step === 'content' && w.template && w.renderer && <StepContent {...props} />}
       {step === 'data' && <StepData {...props} />}
-      {step === 'mapping' && <StepMapping {...props} />}
-      {step === 'images' && <StepImages {...props} />}
-      {step === 'preview' && w.renderer && <StepPreview {...props} />}
       {step === 'generate' && w.renderer && (
-        <StepGenerate
-          {...props}
-          onNewBatch={() => {
-            set({ data: null, excluded: new Set(), overflow: new Map(), overflowChecked: false, generatedBatchId: null, confirmSkipErrors: false, batchName: '' });
-            setStep('content');
-          }}
-        />
+        <div className="space-y-8">
+          {!w.generatedBatchId && <StepPreview {...props} />}
+          <StepGenerate
+            {...props}
+            onNewBatch={() => {
+              set({ data: null, excluded: new Set(), overflow: new Map(), overflowChecked: false, generatedBatchId: null, confirmSkipErrors: false, batchName: '', crops: {} });
+              setStep('data');
+            }}
+          />
+        </div>
       )}
 
       {/* Footer navigation */}
@@ -304,7 +297,7 @@ export default function BatchWizard() {
           </div>
         </div>
       )}
-      {w.rendererError && step !== 'template' && (
+      {w.rendererError && step !== 'design' && (
         <Alert tone="error" className="mt-4" title="The template could not be loaded">
           {w.rendererError}
         </Alert>

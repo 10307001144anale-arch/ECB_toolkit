@@ -15,6 +15,7 @@ import {
 } from '../../shared/placeholders';
 import type {
   ContentConfig,
+  PhotoCrop,
   MappingConfig,
   PlaceholderSetting,
   PlaceholderType,
@@ -29,12 +30,12 @@ export const PREVIEW_CERT_ID = 'CG-PREV-IEW0-0000';
 export function emptyContent(layout: TemplateLayout): ContentConfig {
   const c: ContentConfig = { texts: {}, qr: {}, signatures: {}, photos: {} };
   for (const b of layout.boxes) {
-    if (b.type === 'text') c.texts[b.key] = '';
+    if (b.type === 'text') c.texts[b.key] = b.defaultText || '';
     if (b.type === 'qr') c.qr[b.key] = { mode: b.contentMode === 'client' ? 'custom' : 'verification', value: '' };
     if (b.type === 'photo') c.photos[b.key] = { column: '' };
     if (b.type === 'signature') {
       const mode = b.source === 'client' ? 'single' : b.fixedSignatureFileId ? 'fixed' : 'single';
-      c.signatures[b.key] = { mode: b.required ? mode : b.source === 'client' ? 'none' : mode, column: '', fileName: '' };
+      c.signatures[b.key] = { mode: b.required ? mode : b.source === 'client' ? 'none' : mode, column: '', fileName: '', scale: 1, offsetX: 0, offsetY: 0 };
     }
   }
   return c;
@@ -57,7 +58,7 @@ export function fitContentToLayout(layout: TemplateLayout, content: Partial<Cont
       let mode = s.mode;
       if (mode === 'fixed' && (b.source === 'client' || !b.fixedSignatureFileId)) mode = 'single';
       if ((mode === 'single' || mode === 'column') && b.source === 'fixed') mode = 'fixed';
-      base.signatures[b.key] = { mode, column: s.column || '', fileName: s.fileName || '' };
+      base.signatures[b.key] = { mode, column: s.column || '', fileName: s.fileName || '', scale: s.scale ?? 1, offsetX: s.offsetX ?? 0, offsetY: s.offsetY ?? 0 };
     }
   }
   return base;
@@ -138,7 +139,7 @@ export function contentIssues(layout: TemplateLayout, content: ContentConfig): C
 // ------------------------------------------------------------------ mapping
 
 export function autoMapping(placeholders: PlaceholderInfo[], headers: string[], previous?: MappingConfig | null): MappingConfig {
-  const out: MappingConfig = { placeholders: {}, recipientColumn: null };
+  const out: MappingConfig = { placeholders: {}, recipientColumn: null, idColumn: null };
   const taken = new Set<string>();
   for (const p of placeholders) {
     if (p.system) continue;
@@ -157,6 +158,9 @@ export function autoMapping(placeholders: PlaceholderInfo[], headers: string[], 
     prevRecipient && headers.includes(prevRecipient)
       ? prevRecipient
       : out.placeholders['name']?.column || out.placeholders['full_name']?.column || out.placeholders['recipient_name']?.column || matchColumn('name', headers) || null;
+  // Participant ID (normally CID) is always looked for, even if it is not printed: photos can be named after it.
+  const prevId = previous?.idColumn;
+  out.idColumn = prevId && headers.includes(prevId) ? prevId : out.placeholders['cid']?.column || matchColumn('cid', headers) || null;
   return out;
 }
 
@@ -263,6 +267,27 @@ export interface BatchContext {
   hasFixedSignature: (boxKey: string) => boolean;
   verifyBaseUrl: string;
   today: string;
+  /** Manual photo crops, keyed `${photoBoxKey}|${imageFileName}`. */
+  crops: Record<string, PhotoCrop>;
+}
+
+/** Column that holds photo file names for a photo box ('' = none chosen). */
+export function photoColumn(ctx: Pick<BatchContext, 'content'>, boxKey: string): string {
+  return ctx.content.photos[boxKey]?.column || '';
+}
+
+/**
+ * Finds a participant's photo: first by the file name in the photo column,
+ * then by the participant ID (e.g. 10701000001.jpg). Never by upload order.
+ */
+export function findPhoto(ctx: Pick<BatchContext, 'content' | 'mapping' | 'images'>, boxKey: string, row: Record<string, string>) {
+  const col = photoColumn(ctx, boxKey);
+  const byName = col ? ctx.images.find(row[col]) : null;
+  if (byName) return { entry: byName, tried: row[col] || '' };
+  const id = ctx.mapping.idColumn ? (row[ctx.mapping.idColumn] || '').trim() : '';
+  const byId = id ? ctx.images.find(id) : null;
+  if (byId) return { entry: byId, tried: id };
+  return { entry: null, tried: (col && row[col]) || id || '' };
 }
 
 export interface RowCheck {
@@ -333,14 +358,10 @@ export function validateRows(ctx: BatchContext, rows: Record<string, string>[]):
           if (r.missing.length) (b.required ? errors : warnings).push(`QR "${b.label}" is missing ${r.missing.join(', ')}`);
         }
       } else if (b.type === 'photo') {
-        const col = ctx.content.photos[b.key]?.column;
-        const name = col ? row[col] || '' : '';
-        if (!col) {
-          if (b.required) errors.push(`Choose the photo column for "${b.label}"`);
-        } else if (!name.trim()) {
-          (b.required ? errors : warnings).push(`No photo file name in "${col}"`);
-        } else if (!ctx.images.find(name)) {
-          errors.push(`Photo "${name}" was not uploaded`);
+        const { entry, tried } = findPhoto(ctx, b.key, row);
+        if (!entry) {
+          if (!tried) (b.required ? errors : warnings).push(`No photo for "${b.label}" (no file name or ID)`);
+          else (b.required ? errors : warnings).push(`Photo "${tried}" was not uploaded`);
         }
       } else if (b.type === 'signature') {
         const res = sigBlob(ctx, b.key, row, (k) => (ctx.hasFixedSignature(k) ? new Blob() : null));
@@ -388,10 +409,14 @@ export function resolveCertificate(
         cert.qr[b.key] = r.missing.length ? null : r.text;
       }
     } else if (b.type === 'photo') {
-      const col = ctx.content.photos[b.key]?.column;
-      cert.images[b.key] = col ? ctx.images.find(row[col])?.blob || null : null;
+      const { entry } = findPhoto(ctx, b.key, row);
+      cert.images[b.key] = entry?.blob || null;
+      const manual = entry ? ctx.crops[`${b.key}|${entry.name}`] : undefined;
+      if (manual) (cert.crops ||= {})[b.key] = manual;
     } else {
       cert.images[b.key] = sigBlob(ctx, b.key, row, fixedSignature).blob;
+      const sc = ctx.content.signatures[b.key];
+      if (sc) (cert.placements ||= {})[b.key] = { scale: sc.scale ?? 1, offsetX: sc.offsetX ?? 0, offsetY: sc.offsetY ?? 0 };
     }
   }
   return cert;
@@ -408,6 +433,7 @@ export function draftCertificate(layout: TemplateLayout, content: ContentConfig,
     } else if (b.type === 'signature') {
       const s = content.signatures[b.key];
       cert.images[b.key] = s?.mode === 'fixed' ? fixedSignature(b.key) : s?.mode === 'single' && images ? images.find(s.fileName)?.blob || null : null;
+      if (s) (cert.placements ||= {})[b.key] = { scale: s.scale ?? 1, offsetX: s.offsetX ?? 0, offsetY: s.offsetY ?? 0 };
     } else cert.images[b.key] = null;
   }
   return cert;

@@ -21,10 +21,10 @@ import {
   type Color,
 } from 'pdf-lib';
 import QRCode from 'qrcode';
-import type { PhotoBox, QrBox, SignatureBox, TemplateLayout, TextBox } from '../../shared/types';
+import type { PhotoBox, PhotoCrop, QrBox, SignatureBox, TemplateLayout, TextBox } from '../../shared/types';
 import { FontEmbedder, registerBrowserFont, type EmbeddedFont, type FileFetcher } from './fonts';
 import { layoutText, TEXT_PADDING, type Measurer } from './textLayout';
-import { prepareImage } from './images';
+import { autoCrop, detectFocus, prepareImage, type SignaturePlacement } from './images';
 
 export interface ResolvedCertificate {
   /** Final text per text-box key ('' leaves the box empty). */
@@ -33,6 +33,10 @@ export interface ResolvedCertificate {
   qr: Record<string, string | null>;
   /** Image per photo/signature box key. */
   images: Record<string, Blob | null>;
+  /** Manual photo crops per photo-box key (otherwise the face/subject is found automatically). */
+  crops?: Record<string, PhotoCrop | undefined>;
+  /** Client size/position of each signature inside its box. */
+  placements?: Record<string, SignaturePlacement | undefined>;
 }
 
 export interface RenderWarning {
@@ -222,7 +226,7 @@ export class CertificateRenderer {
           if (value && value.trim()) this.drawQr(page, box, rect, value);
         } else {
           const blob = cert.images[box.key];
-          if (blob) await this.drawImageBox(ctx, page, box, rect, blob);
+          if (blob) await this.drawImageBox(ctx, page, box, rect, blob, cert);
           else if (opts.placeholders) {
             // Preview only: show where the image will go.
             page.drawRectangle({
@@ -382,9 +386,13 @@ export class CertificateRenderer {
     page: PDFPage,
     box: PhotoBox | SignatureBox,
     rect: { x: number; top: number; w: number; h: number },
-    blob: Blob
+    blob: Blob,
+    cert: ResolvedCertificate
   ) {
-    const prepared = await prepareImage(blob, box, rect.w, rect.h);
+    let opts = {};
+    if (box.type === 'photo' && box.fit === 'cover') opts = { crop: cert.crops?.[box.key] || autoCrop(await detectFocus(blob)) };
+    if (box.type === 'signature' && cert.placements?.[box.key]) opts = { placement: cert.placements[box.key] };
+    const prepared = await prepareImage(blob, box, rect.w, rect.h, opts);
     const img = prepared.kind === 'png' ? await ctx.doc.embedPng(prepared.bytes) : await ctx.doc.embedJpg(prepared.bytes);
     const y = rect.top - rect.h;
     page.drawImage(img, { x: rect.x, y, width: rect.w, height: rect.h });

@@ -150,7 +150,24 @@ export function BoxProperties({ box, layout, published, onChange, onDelete, onDu
           />
         </Field>
         <Toggle checked={box.required} onChange={(v) => set({ required: v })} label="Required" description={box.type === 'text' ? 'Clients must fill this box.' : 'Every certificate must include this.'} />
-        {box.type === 'text' && <p className="rounded-md bg-slate-50 p-2 text-xs text-slate-500">This box is saved empty. Clients write the wording when they generate certificates.</p>}
+        {box.type === 'text' && (
+          <Field
+            label="Default wording"
+            htmlFor="bp-default"
+            optional
+            hint={'Shown to clients as a starting point; they can keep it or rewrite it for their batch. You can use fields like {{name}}. Leave empty if the client should write it.'}
+          >
+            <Textarea
+              id="bp-default"
+              rows={3}
+              value={box.defaultText}
+              maxLength={5000}
+              placeholder="e.g. This certificate is proudly presented to"
+              onChange={(e) => onChange({ defaultText: e.target.value } as Partial<TemplateBox>, false)}
+              onBlur={() => onChange({}, true)}
+            />
+          </Field>
+        )}
       </Section>
 
       <Section title="Position & size" defaultOpen={false}>

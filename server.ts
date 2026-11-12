@@ -26,6 +26,7 @@ const { clientRouter } = await import('./server/routes/client.ts');
 const { publicRouter, filesRouter } = await import('./server/routes/public.ts');
 const { microsoftRouter } = await import('./server/routes/microsoft.ts');
 const { aiRouter } = await import('./server/routes/ai.ts');
+const { googleRouter } = await import('./server/routes/google.ts');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -77,7 +78,10 @@ async function start() {
   app.use('/api/admin/ai', aiRouter);
   app.use('/api/admin', adminRouter);
   app.use('/api/client', guestMiddleware, clientRouter);
-  app.use('/api/integrations/microsoft', (req: any, res, next) => (req.user?.role === 'client' || req.path === '/callback' ? next() : guestMiddleware(req, res, next)), microsoftRouter);
+  // Spreadsheet integrations: signed-in clients use their account, everyone else their anonymous browser.
+  const integrationAccess = (req: any, res: any, next: any) => (req.user?.role === 'client' || req.path === '/callback' ? next() : guestMiddleware(req, res, next));
+  app.use('/api/integrations/microsoft', integrationAccess, microsoftRouter);
+  app.use('/api/integrations/google', integrationAccess, googleRouter);
   app.use('/api/public', publicRouter);
   app.use('/api/files', (req: any, res, next) => (req.user ? next() : guestMiddleware(req, res, next)));
   app.use('/api', filesRouter); // /api/files/:id

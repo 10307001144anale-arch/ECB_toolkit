@@ -1,7 +1,7 @@
 // Template layout defaults, sanitising and publish validation.
-// The sanitiser is the enforcement point for "text boxes are always empty":
-// it rebuilds every box from an allow-list of layout/styling properties, so no
-// wording can ever be stored in a template, whatever the client sends.
+// The sanitiser rebuilds every box from an allow-list of properties. Text boxes
+// may carry admin "default wording"; clients edit a copy of it per batch, never
+// the template itself.
 
 import type {
   BoxType,
@@ -78,6 +78,7 @@ export function newBox(type: BoxType, id: string, rect: { page: number; x: numbe
       return {
         ...base,
         type: 'text',
+        defaultText: '',
         fontFamily: 'Helvetica',
         fontWeight: '400',
         italic: false,
@@ -177,6 +178,7 @@ export function sanitizeLayout(input: any): TemplateLayout {
       const box: TextBox = {
         ...base,
         type: 'text',
+        defaultText: str(b?.defaultText, '', 5000),
         fontFamily: str(b?.fontFamily, 'Helvetica', 60) || 'Helvetica',
         fontWeight: oneOf(b?.fontWeight, ['400', '700'] as const, '400'),
         italic: bool(b?.italic, false),

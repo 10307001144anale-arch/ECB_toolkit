@@ -219,10 +219,10 @@ clientRouter.post(
     const recipients: unknown[] = Array.isArray(req.body?.recipients) ? req.body.recipients : [];
     const total = recipients.length;
     if (total < 1) throw new HttpError(400, 'There are no participants to generate.');
-    if (total > 20000) throw new HttpError(400, 'A single batch is limited to 20,000 certificates.');
     const id = newId('bat_');
     const t = now();
     const ids: string[] = [];
+    const used = new Set<string>();
     tx(() => {
       db.prepare(
         `INSERT INTO batches (id, client_id, template_id, template_version_id, name, content_json, mapping_json, total, status, created_at, device_id)
@@ -243,7 +243,8 @@ clientRouter.post(
       for (let i = 0; i < total; i++) {
         const rn = typeof recipients[i] === 'string' ? (recipients[i] as string).trim().slice(0, 200) || null : null;
         let cid = certificateId();
-        while (ids.includes(cid)) cid = certificateId();
+        while (used.has(cid)) cid = certificateId();
+        used.add(cid);
         ins.run(cid, id, i, rn, 'pending', t);
         ids.push(cid);
       }

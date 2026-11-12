@@ -1,10 +1,11 @@
-import type { ClientTemplate, ContentConfig, ContentPreset, MappingConfig } from '../../../../shared/types';
+import type { ClientTemplate, ContentConfig, ContentPreset, MappingConfig, PhotoCrop } from '../../../../shared/types';
 import type { CertificateRenderer } from '../../../engine/renderer';
 import type { ParticipantData } from '../../../engine/spreadsheet';
 import { ImageLibrary } from '../../../engine/images';
 import type { BatchContext, ContentIssue, PlaceholderInfo, RowCheck } from '../../../engine/batch';
 
-export type StepId = 'template' | 'content' | 'data' | 'mapping' | 'images' | 'preview' | 'generate';
+/** 1 Template & wording · 2 Participant data · 3 Preview & generate */
+export type StepId = 'design' | 'data' | 'generate';
 
 export interface WizardState {
   template: ClientTemplate | null;
@@ -16,6 +17,8 @@ export interface WizardState {
   mapping: MappingConfig;
   images: ImageLibrary;
   imagesVersion: number;
+  /** Manual photo crops, keyed `${photoBoxKey}|${imageFileName}`. */
+  crops: Record<string, PhotoCrop>;
   excluded: Set<number>;
   /** Overflow warnings per row, filled by the "check all" pass on the preview step. */
   overflow: Map<number, string[]>;
@@ -34,9 +37,10 @@ export function initialState(): WizardState {
     content: { texts: {}, qr: {}, signatures: {}, photos: {} },
     preset: null,
     data: null,
-    mapping: { placeholders: {}, recipientColumn: null },
+    mapping: { placeholders: {}, recipientColumn: null, idColumn: null },
     images: new ImageLibrary(),
     imagesVersion: 0,
+    crops: {},
     excluded: new Set(),
     overflow: new Map(),
     overflowChecked: false,

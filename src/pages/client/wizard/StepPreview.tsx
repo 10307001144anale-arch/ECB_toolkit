@@ -1,7 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight, MinusCircle, Pencil, Search, XCircle } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight, Crop, MinusCircle, Pencil, Search, XCircle } from 'lucide-react';
 import { Alert, Badge, Button, Card, Field, IconButton, Input, Modal, ProgressBar, Segmented, cx } from '../../../components/ui';
-import { PREVIEW_CERT_ID, resolveCertificate, rowValues } from '../../../engine/batch';
+import { findPhoto, PREVIEW_CERT_ID, resolveCertificate, rowValues } from '../../../engine/batch';
+import { CropEditor } from './CropEditor';
+import type { PhotoBox } from '../../../../shared/types';
 import { resolvePlaceholders } from '../../../../shared/placeholders';
 import { yieldToBrowser } from '../../../engine/renderer';
 import { CertificatePreview } from './CertificatePreview';
@@ -9,7 +11,7 @@ import type { StepProps } from './state';
 
 type Filter = 'all' | 'issues' | 'excluded';
 
-export function StepPreview({ w, d, set }: StepProps) {
+export function StepPreview({ w, d, set, goTo }: StepProps) {
   const rows = w.data!.rows;
   const renderer = w.renderer!;
   const [selected, setSelected] = useState(() => d.readyRows[0] ?? 0);
@@ -17,6 +19,7 @@ export function StepPreview({ w, d, set }: StepProps) {
   const [q, setQ] = useState('');
   const [limit, setLimit] = useState(200);
   const [editing, setEditing] = useState<number | null>(null);
+  const [cropping, setCropping] = useState<{ box: PhotoBox; name: string; blob: Blob } | null>(null);
   const [checkProgress, setCheckProgress] = useState<number | null>(null);
   const nameCol = w.mapping.recipientColumn || Object.values(w.mapping.placeholders).find((m) => m.column)?.column || w.data!.headers[0];
 
@@ -90,6 +93,21 @@ export function StepPreview({ w, d, set }: StepProps) {
     });
 
   const pos = list.indexOf(selected);
+  const photoBoxes = w.template!.layout.boxes.filter((b): b is PhotoBox => b.type === 'photo' && b.fit === 'cover');
+  const selPhotos = d.ctx && rows[selected] ? photoBoxes.map((b) => ({ box: b, entry: findPhoto(d.ctx!, b.key, rows[selected]).entry })).filter((x) => x.entry) : [];
+  const fixLinks = (
+    <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm font-medium">
+      <button type="button" className="text-brand-700 hover:underline" onClick={() => setEditing(selected)}>
+        Edit this row
+      </button>
+      <button type="button" className="text-brand-700 hover:underline" onClick={() => goTo('data')}>
+        Fix columns, photos or signatures
+      </button>
+      <button type="button" className="text-brand-700 hover:underline" onClick={() => goTo('design')}>
+        Edit wording
+      </button>
+    </div>
+  );
   const sel = d.checks[selected];
 
   return (
@@ -183,6 +201,7 @@ export function StepPreview({ w, d, set }: StepProps) {
                   <li key={i}>{e}</li>
                 ))}
               </ul>
+              {fixLinks}
             </Alert>
           ) : null}
           {(sel?.warnings.length || w.overflow.get(selected)?.length) && !sel?.errors.length ? (
@@ -192,8 +211,23 @@ export function StepPreview({ w, d, set }: StepProps) {
                   <li key={i}>{e}</li>
                 ))}
               </ul>
+              {fixLinks}
             </Alert>
           ) : null}
+          {selPhotos.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2">
+              {selPhotos.map(({ box, entry }) => {
+                const manual = !!w.crops[`${box.key}|${entry!.name}`];
+                return (
+                  <Button key={box.key} size="sm" icon={<Crop className="h-4 w-4" />} onClick={() => setCropping({ box, name: entry!.name, blob: entry!.blob })}>
+                    Adjust {photoBoxes.length > 1 ? box.label : 'photo'}
+                    {manual && <span className="ml-1 text-xs text-emerald-700">(adjusted)</span>}
+                  </Button>
+                );
+              })}
+              <span className="text-xs text-slate-500">Photos are cropped around the face automatically.</span>
+            </div>
+          )}
           <CertificatePreview renderer={renderer} cert={cert} debounceMs={120} />
           <p className="text-xs text-slate-500">
             The QR code and certificate ID in the preview are samples. Real IDs are issued when you generate.
@@ -210,6 +244,31 @@ export function StepPreview({ w, d, set }: StepProps) {
             </span>
           </label>
         </Card>
+      )}
+
+      {cropping && (
+        <CropEditor
+          blob={cropping.blob}
+          box={cropping.box}
+          fileName={cropping.name}
+          aspect={(() => {
+            const pg = renderer.pageSize(cropping.box.page);
+            return ((cropping.box.w / 100) * pg.width) / ((cropping.box.h / 100) * pg.height);
+          })()}
+          initial={w.crops[`${cropping.box.key}|${cropping.name}`] || null}
+          onReset={() =>
+            set((s) => {
+              const crops = { ...s.crops };
+              delete crops[`${cropping.box.key}|${cropping.name}`];
+              return { crops };
+            })
+          }
+          onSave={(c) => {
+            set((s) => ({ crops: { ...s.crops, [`${cropping.box.key}|${cropping.name}`]: c } }));
+            setCropping(null);
+          }}
+          onClose={() => setCropping(null)}
+        />
       )}
 
       {editing !== null && (

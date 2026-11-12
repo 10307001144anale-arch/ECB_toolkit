@@ -59,7 +59,7 @@ const draft = {
   pages: [{ width: 842, height: 595, previewFileId: prevId }],
   boxes: [
     { id: 'b1', type: 'text', key: 'recipient_name', label: 'Recipient name', x: 10, y: 40, w: 80, h: 10,
-      text: 'SNEAKY WORDING', defaultValue: 'Karma', content: 'x', fontFamily: 'Helvetica' },
+      text: 'SNEAKY WORDING', defaultValue: 'Karma', content: 'x', defaultText: 'Awarded to {{name}}', fontFamily: 'Helvetica' },
     { id: 'b2', type: 'qr', key: 'qr', label: 'QR', x: 80, y: 80, w: 10, h: 14 },
   ],
   fonts: [],
@@ -68,7 +68,8 @@ r = await admin.req('PUT', `/api/admin/templates/${tplId}`, { draft });
 assert.equal(r.status, 200);
 const savedBox = r.json.draft.boxes[0];
 assert.equal(savedBox.text, undefined); assert.equal(savedBox.defaultValue, undefined); assert.equal(savedBox.content, undefined);
-ok('text boxes saved empty (wording stripped server-side)');
+ok('unknown wording fields stripped server-side');
+assert.equal(savedBox.defaultText, 'Awarded to {{name}}'); ok('admin default wording saved');
 
 r = await admin.req('POST', `/api/admin/templates/${tplId}/publish`, { notes: 'first' });
 assert.equal(r.status, 200); assert.equal(r.json.status, 'published'); assert.equal(r.json.currentVersionNumber, 1); ok('published v1');
@@ -143,7 +144,10 @@ assert.equal(r.status, 201); const gp = r.json.id;
 r = await g2.req('GET', '/api/client/presets'); assert.equal(r.json.length, 0); ok("public visitors don't see each other's presets");
 r = await g2.req('PUT', `/api/client/presets/${gp}`, { name: 'x' }); assert.equal(r.status, 404); ok("public visitor cannot edit another browser's preset");
 r = await g1.req('GET', '/api/client/presets'); assert.equal(r.json.length, 1); ok('public visitor keeps own preset');
-r = await g1.req('GET', '/api/integrations/microsoft/status'); assert.equal(r.json.requiresAccount, true); ok('Microsoft requires a named account for public visitors');
+r = await g1.req('GET', '/api/integrations/microsoft/status'); assert.equal(r.status, 200); assert.equal(r.json.connected, false); ok('public visitor can check Microsoft status (per-browser connection)');
+r = await g1.req('GET', '/api/integrations/google/status'); assert.equal(r.status, 200); assert.equal(r.json.configured, false); assert.equal(r.json.connected, false); ok('Google Sheets reports not configured (no fake connection)');
+r = await g1.req('GET', '/api/integrations/google/files'); assert.equal(r.status, 503); ok('Google endpoints refuse when unconfigured');
+r = await g1.req('GET', '/api/public/config'); assert.equal(r.json.googleConfigured, false); ok('config exposes googleConfigured');
 r = await admin.req('GET', '/api/admin/clients'); const pub = r.json.find((c: any) => c.isPublic); assert.ok(pub); ok('public client listed for admins');
 await admin.req('PUT', `/api/admin/clients/${pub.id}`, { active: false });
 r = await g1.req('GET', '/api/client/templates'); assert.equal(r.status, 401); ok('turning off public access requires sign-in');
@@ -151,7 +155,7 @@ await admin.req('PUT', `/api/admin/clients/${pub.id}`, { active: true });
 r = await new Client().req('POST', '/api/auth/login', { email: 'public@guest.invalid', password: 'disabled' }); assert.equal(r.status, 401); ok('public client cannot be signed into');
 
 r = await b.req('GET', '/api/integrations/microsoft/status'); assert.equal(r.json.configured, false); ok('Microsoft reports not configured (no fake connection)');
-r = await b.req('GET', '/api/integrations/microsoft/workbooks'); assert.equal(r.status, 503); ok('Graph endpoints refuse when unconfigured');
+r = await b.req('GET', '/api/integrations/microsoft/files'); assert.equal(r.status, 503); ok('Graph endpoints refuse when unconfigured');
 
 r = await admin.req('GET', '/api/admin/stats'); assert.equal(r.json.certificates, 2); ok('admin stats');
 r = await admin.req('POST', `/api/admin/certificates/${ids[1]}/revoke`, {});

@@ -50,7 +50,7 @@ export function securityHeaders(isProd: boolean) {
           "worker-src 'self' blob:",
           "frame-ancestors 'none'",
           "base-uri 'self'",
-          "form-action 'self' https://login.microsoftonline.com",
+          "form-action 'self' https://login.microsoftonline.com https://accounts.google.com",
         ].join('; ')
       );
       res.setHeader('Strict-Transport-Security', 'max-age=15552000');

@@ -310,7 +310,7 @@ export default function TemplateDesigner({ id }: { id: string }) {
       const qr: Record<string, string> = {};
       const images: Record<string, Blob | null> = {};
       for (const b of clean.boxes) {
-        if (b.type === 'text') texts[b.key] = b.multiline ? `${b.label}\nSecond line of sample text` : `Sample: ${b.label}`;
+        if (b.type === 'text') texts[b.key] = b.defaultText || (b.multiline ? `${b.label}\nSecond line of sample text` : `Sample: ${b.label}`);
         if (b.type === 'qr') qr[b.key] = `${window.location.origin}/verify/CG-SAMP-LE00-0000`;
         if (b.type === 'signature') images[b.key] = renderer.fixedSignature(b.key);
         if (b.type === 'photo') images[b.key] = null;
@@ -538,7 +538,7 @@ export default function TemplateDesigner({ id }: { id: string }) {
           )}
           {preview && (
             <div className="absolute left-1/2 top-3 -translate-x-1/2 rounded-full bg-slate-900/80 px-3 py-1 text-xs text-white">
-              Preview with sample wording — the template itself stays empty
+              Preview with default wording (sample text where a box has none)
             </div>
           )}
         </section>
@@ -594,7 +594,7 @@ export default function TemplateDesigner({ id }: { id: string }) {
                     ))}
                   </ul>
                 )}
-                <p className="text-xs text-slate-500">Text boxes are always saved empty. Use Preview to check styling with sample wording.</p>
+                <p className="text-xs text-slate-500">Default wording is optional. Clients can keep it or rewrite it for their own batch; the template itself never changes.</p>
               </Section>
             </div>
           )}
