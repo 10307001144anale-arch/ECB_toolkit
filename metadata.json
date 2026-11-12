@@ -1,6 +1,6 @@
 {
-  "name": "Certificate Template Studio",
-  "description": "Upload certificate backgrounds, auto-detect placeholder boxes with Gemini AI, configure dynamic zones with smart tools, and generate print-ready certificates.",
+  "name": "CertiGen — Template-based bulk certificate generation",
+  "description": "Administrators upload certificate designs and draw empty boxes; clients write the wording, connect Excel and generate personalised certificates in bulk.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

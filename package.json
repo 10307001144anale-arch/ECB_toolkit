@@ -1,15 +1,17 @@
 {
-  "name": "react-example",
+  "name": "certigen",
   "private": true,
-  "version": "0.0.0",
+  "version": "2.0.0",
   "type": "module",
   "scripts": {
-    "dev": "tsx server.ts",
-    "start": "node server.ts",
+    "dev": "tsx server.ts --open",
     "build": "vite build",
-    "preview": "vite preview",
-    "clean": "rm -rf dist server.js",
-    "lint": "tsc --noEmit"
+    "start": "tsx server.ts --production",
+    "create-admin": "tsx server/scripts/create-admin.ts",
+    "lint": "tsc --noEmit",
+    "test:api": "node tests/api-smoke.ts http://localhost:3999",
+    "clean": "rm -rf dist",
+    "dev:no-browser": "tsx server.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
@@ -43,9 +45,12 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "autoprefixer": "^10.4.21",
-    "esbuild": "^0.25.0",
+    "esbuild": "^0.28.0",
     "tailwindcss": "^4.3.3",
     "tsx": "^4.21.0",
     "typescript": "^7.0.2"
+  },
+  "engines": {
+    "node": ">=22.13"
   }
 }

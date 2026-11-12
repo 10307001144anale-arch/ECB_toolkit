@@ -1,185 +1,104 @@
-import React, { useState, useEffect } from 'react';
-import { CertificateTemplate } from './types';
-import { getAllTemplates, saveTemplate } from './utils/db';
-import { getInitialSampleTemplates } from './utils/sampleTemplates';
-import { Header } from './components/layout/Header';
-import { UserWorkflow } from './components/user/UserWorkflow';
-import { TemplateManager } from './components/admin/TemplateManager';
-import { GenerationHistoryView } from './components/history/GenerationHistoryView';
-import { AdminAuthModal } from './components/admin/AdminAuthModal';
-import { ToastProvider, useToast } from './context/ToastContext';
+import React, { Suspense, lazy, useEffect } from 'react';
+import { AuthProvider, useAuth } from './lib/auth';
+import { RouterProvider, matchPath, useRouter } from './lib/router';
+import { ToastProvider } from './context/ToastContext';
+import { ConfirmProvider, Spinner } from './components/ui';
+import { AppShell } from './components/AppShell';
+import { LoginPage } from './pages/LoginPage';
+import { VerifyPage } from './pages/VerifyPage';
+import { OAuthCompletePage } from './pages/OAuthCompletePage';
+import { purgeExpiredOutputs } from './engine/localStore';
 
-function AppContent() {
-  const { showToast } = useToast();
-  const [templates, setTemplates] = useState<CertificateTemplate[]>([]);
-  const [selectedTemplate, setSelectedTemplate] = useState<CertificateTemplate | null>(null);
-  const [currentTab, setCurrentTab] = useState<'user' | 'admin' | 'history'>('user');
-  const [isAdminUnlocked, setIsAdminUnlocked] = useState<boolean>(false);
-  const [showAuthModal, setShowAuthModal] = useState<boolean>(false);
-  const [darkMode, setDarkMode] = useState<boolean>(() => {
-    return localStorage.getItem('certigen_theme') === 'dark';
-  });
+// Heavier screens are loaded on demand.
+const AdminDashboard = lazy(() => import('./pages/admin/AdminDashboard'));
+const TemplatesPage = lazy(() => import('./pages/admin/TemplatesPage'));
+const TemplateDesigner = lazy(() => import('./pages/admin/TemplateDesigner'));
+const ActivityPage = lazy(() => import('./pages/admin/ActivityPage'));
+const ClientHome = lazy(() => import('./pages/client/ClientHome'));
+const BatchWizard = lazy(() => import('./pages/client/BatchWizard'));
+const HistoryPage = lazy(() => import('./pages/client/HistoryPage'));
+const PresetsPage = lazy(() => import('./pages/client/PresetsPage'));
 
-  // Dark mode effect
-  useEffect(() => {
-    if (darkMode) {
-      document.documentElement.classList.add('dark');
-      localStorage.setItem('certigen_theme', 'dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-      localStorage.setItem('certigen_theme', 'light');
+function Routes() {
+  const { path, navigate } = useRouter();
+  const { user, loading } = useAuth();
+
+  // Public routes
+  const verify = matchPath('/verify/:id', path);
+  if (verify) return <VerifyPage id={verify.id} />;
+  if (path === '/verify') return <VerifyPage id={null} />;
+  if (path === '/oauth/microsoft') return <OAuthCompletePage />;
+
+  if (loading) return <Spinner className="min-h-screen" />;
+
+  // Client portal: open to everyone. Visitors who are not signed in (and
+  // administrators visiting it) use the public client account.
+  if (path === '/' ) return <Redirect to={user?.role === 'admin' ? '/admin' : '/app'} />;
+  if (path === '/app' || path.startsWith('/app/')) {
+    let page: React.ReactNode = null;
+    if (path === '/app') page = <ClientHome />;
+    else if (path === '/app/new') page = <BatchWizard />;
+    else if (path === '/app/history') page = <HistoryPage />;
+    else if (path === '/app/presets') page = <PresetsPage />;
+    if (page) return <AppShell mode="client">{page}</AppShell>;
+    return <NotFound onHome={() => navigate('/app')} />;
+  }
+
+  // Admin portal: always requires an administrator sign-in.
+  if (path === '/login') {
+    if (user?.role === 'admin') return <Redirect to="/admin" />;
+    if (user?.role === 'client') return <Redirect to="/app" />;
+    return <LoginPage />;
+  }
+  if (path === '/admin' || path.startsWith('/admin/')) {
+    if (!user || user.role !== 'admin') {
+      return <Redirect to={`/login?next=${encodeURIComponent(path + window.location.search)}`} />;
     }
-  }, [darkMode]);
+    const designer = matchPath('/admin/templates/:id', path);
+    if (designer) return <TemplateDesigner id={designer.id} />;
+    let page: React.ReactNode = null;
+    if (path === '/admin') page = <AdminDashboard />;
+    else if (path === '/admin/templates') page = <TemplatesPage />;
+    else if (path === '/admin/activity') page = <ActivityPage />;
+    if (page) return <AppShell mode="admin">{page}</AppShell>;
+  }
+  return <NotFound onHome={() => navigate(user?.role === 'admin' ? '/admin' : '/app')} />;
+}
 
-  // Initial Templates loader & seeding
-  useEffect(() => {
-    const loadTemplates = async () => {
-      try {
-        let stored = await getAllTemplates();
-        const hasEcb = stored.some((t) => t.id === 'template-sample-ecb');
+function Redirect({ to }: { to: string }) {
+  const { navigate } = useRouter();
+  useEffect(() => navigate(to, { replace: true }), [to, navigate]);
+  return null;
+}
 
-        if (stored.length === 0 || !hasEcb) {
-          const samples = getInitialSampleTemplates();
-          for (const s of samples) {
-            const exists = stored.find((t) => t.id === s.id);
-            if (!exists) {
-              await saveTemplate(s);
-            }
-          }
-          stored = await getAllTemplates();
-        }
-
-        // Put ECB Official template first
-        const sorted = [...stored].sort((a, b) => {
-          if (a.id === 'template-sample-ecb') return -1;
-          if (b.id === 'template-sample-ecb') return 1;
-          return 0;
-        });
-
-        setTemplates(sorted);
-        if (sorted.length > 0 && !selectedTemplate) {
-          setSelectedTemplate(sorted[0]);
-        }
-      } catch (err) {
-        console.error('Failed to load templates:', err);
-      }
-    };
-
-    loadTemplates();
-
-    // Check URL for /admin route: enforce authentication before opening admin
-    const checkRoute = () => {
-      if (window.location.pathname.includes('/admin') || window.location.hash.includes('admin')) {
-        if (!isAdminUnlocked) {
-          setShowAuthModal(true);
-        } else {
-          setCurrentTab('admin');
-        }
-      }
-    };
-    checkRoute();
-    window.addEventListener('popstate', checkRoute);
-    return () => window.removeEventListener('popstate', checkRoute);
-  }, [isAdminUnlocked]);
-
-  const handleToggleTheme = () => {
-    setDarkMode((prev) => !prev);
-  };
-
-  const handleTabChange = (tab: 'user' | 'admin' | 'history') => {
-    if (tab === 'admin' && !isAdminUnlocked) {
-      setShowAuthModal(true);
-      return;
-    }
-    setCurrentTab(tab);
-  };
-
-  const handleAdminAuthSuccess = () => {
-    setIsAdminUnlocked(true);
-    setShowAuthModal(false);
-    setCurrentTab('admin');
-    showToast('Admin Mode unlocked', 'success');
-  };
-
-  const handleTemplateCreated = (newTemplate: CertificateTemplate) => {
-    setTemplates((prev) => [newTemplate, ...prev]);
-    setSelectedTemplate(newTemplate);
-    showToast(`Template "${newTemplate.name}" created`, 'success');
-  };
-
-  const handleTemplateUpdated = (updated: CertificateTemplate) => {
-    setTemplates((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
-    if (selectedTemplate?.id === updated.id) {
-      setSelectedTemplate(updated);
-    }
-    showToast(`Template "${updated.name}" updated`, 'success');
-  };
-
-  const handleTemplateDeleted = (id: string) => {
-    setTemplates((prev) => prev.filter((t) => t.id !== id));
-    if (selectedTemplate?.id === id) {
-      const remaining = templates.filter((t) => t.id !== id);
-      setSelectedTemplate(remaining.length > 0 ? remaining[0] : null);
-    }
-    showToast('Template deleted', 'info');
-  };
-
+function NotFound({ onHome }: { onHome: () => void }) {
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col font-sans transition-colors duration-200">
-      <Header
-        currentTab={currentTab}
-        onSelectTab={handleTabChange}
-        isAdminUnlocked={isAdminUnlocked}
-        onLockAdmin={() => {
-          setIsAdminUnlocked(false);
-          setCurrentTab('user');
-          showToast('Admin mode locked', 'info');
-        }}
-        onRequestAdmin={() => setShowAuthModal(true)}
-        darkMode={darkMode}
-        onToggleDarkMode={handleToggleTheme}
-      />
-
-      <main className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-        {currentTab === 'user' && (
-          <UserWorkflow
-            templates={templates}
-            selectedTemplate={selectedTemplate}
-            onSelectTemplate={(tpl) => setSelectedTemplate(tpl)}
-            onSwitchToAdmin={() => handleTabChange('admin')}
-          />
-        )}
-
-        {currentTab === 'admin' && (
-          <TemplateManager
-            templates={templates}
-            onTemplatesChange={(updated) => setTemplates(updated)}
-            onSelectTemplateForGeneration={(tpl) => {
-              setSelectedTemplate(tpl);
-              setCurrentTab('user');
-            }}
-          />
-        )}
-
-        {currentTab === 'history' && (
-          <GenerationHistoryView />
-        )}
-      </main>
-
-      {/* Admin Passcode Modal */}
-      <AdminAuthModal
-        isOpen={showAuthModal}
-        onClose={() => setShowAuthModal(false)}
-        onSuccess={handleAdminAuthSuccess}
-      />
+    <div className="flex min-h-screen flex-col items-center justify-center gap-3 p-6 text-center">
+      <p className="text-sm font-semibold text-brand-700">404</p>
+      <h1 className="text-2xl font-semibold">Page not found</h1>
+      <p className="text-sm text-slate-600">This page does not exist or you do not have access to it.</p>
+      <button onClick={onHome} className="mt-2 text-sm font-medium text-brand-700 hover:underline">
+        Go to your home page
+      </button>
     </div>
   );
 }
 
 export default function App() {
+  useEffect(() => {
+    purgeExpiredOutputs();
+  }, []);
   return (
     <ToastProvider>
-      <AppContent />
+      <ConfirmProvider>
+        <RouterProvider>
+          <AuthProvider>
+            <Suspense fallback={<Spinner className="min-h-screen" />}>
+              <Routes />
+            </Suspense>
+          </AuthProvider>
+        </RouterProvider>
+      </ConfirmProvider>
     </ToastProvider>
   );
 }

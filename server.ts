@@ -1,122 +1,122 @@
+// CertiGen server: REST API + SQLite database + Vite (dev) or static build (prod).
+//
+//   npm run dev    -> development with hot reload
+//   npm run build  -> build the frontend into dist/
+//   npm start      -> production server (serves dist/)
+
 import express from 'express';
-import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import { GoogleGenAI, Type } from '@google/genai';
+import path from 'node:path';
+import fs from 'node:fs';
+import http from 'node:http';
+import { fileURLToPath } from 'node:url';
 
 dotenv.config();
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const isProd = process.env.NODE_ENV === 'production' || process.argv.includes('--production');
+if (isProd) process.env.NODE_ENV = 'production';
 
-async function startServer() {
+// Imported after dotenv so DATA_DIR / APP_SECRET are available.
+const { db, logActivity } = await import('./server/db.ts');
+const { sessionMiddleware, guestMiddleware, createUser, passwordProblem, purgeExpiredSessions } = await import('./server/auth.ts');
+const { csrfGuard, errorHandler, securityHeaders } = await import('./server/http.ts');
+const { authRouter } = await import('./server/routes/auth.ts');
+const { adminRouter } = await import('./server/routes/admin.ts');
+const { clientRouter } = await import('./server/routes/client.ts');
+const { publicRouter, filesRouter } = await import('./server/routes/public.ts');
+const { microsoftRouter } = await import('./server/routes/microsoft.ts');
+const { aiRouter } = await import('./server/routes/ai.ts');
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+/** Creates the first administrator from ADMIN_EMAIL / ADMIN_PASSWORD when no admin exists. */
+function bootstrapAdmin() {
+  const hasAdmin = db.prepare("SELECT 1 FROM users WHERE role = 'admin' LIMIT 1").get();
+  if (hasAdmin) return;
+  const email = process.env.ADMIN_EMAIL?.trim().toLowerCase();
+  const password = process.env.ADMIN_PASSWORD || '';
+  if (!email || !password) {
+    console.warn(
+      '\n  No administrator account exists yet.\n' +
+        '  Set ADMIN_EMAIL and ADMIN_PASSWORD in .env and restart, or run:\n' +
+        '    npm run create-admin -- you@example.org "Your Name"\n'
+    );
+    return;
+  }
+  const problem = passwordProblem(password);
+  if (problem) {
+    console.warn(`  ADMIN_PASSWORD rejected: ${problem}`);
+    return;
+  }
+  const u = createUser({ email, name: process.env.ADMIN_NAME || 'Administrator', password, role: 'admin' });
+  logActivity(u.id, 'admin_bootstrapped', email);
+  console.log(`  Created administrator account ${email}. You can remove ADMIN_PASSWORD from .env now.`);
+}
+
+async function start() {
+  bootstrapAdmin();
+  purgeExpiredSessions();
+  setInterval(purgeExpiredSessions, 60 * 60 * 1000).unref();
+
   const app = express();
-  const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
+  const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+  if (process.env.TRUST_PROXY) app.set('trust proxy', process.env.TRUST_PROXY === 'true' ? 1 : process.env.TRUST_PROXY);
+  app.disable('x-powered-by');
 
-  app.use(express.json({ limit: '50mb' }));
-  app.use(express.urlencoded({ extended: true, limit: '50mb' }));
-
-  // Initialize Gemini client server-side with user-agent header
-  const ai = new GoogleGenAI({
-    apiKey: process.env.GEMINI_API_KEY,
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build',
-      },
-    },
+  app.use(securityHeaders(isProd));
+  app.use('/api', express.json({ limit: '25mb' }));
+  app.use('/api', sessionMiddleware);
+  app.use('/api', csrfGuard);
+  app.use('/api', (_req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store');
+    next();
   });
 
-  // Gemini endpoint to detect placeholder boxes from certificate templates
-  app.post('/api/detect-placeholders', async (req, res) => {
-    try {
-      const { imageBase64, mimeType } = req.body;
-      if (!imageBase64) {
-        return res.status(400).json({ error: 'imageBase64 is required' });
-      }
+  app.get('/api/health', (_req, res) => res.json({ ok: true }));
+  app.use('/api/auth', authRouter);
+  app.use('/api/admin/ai', aiRouter);
+  app.use('/api/admin', adminRouter);
+  app.use('/api/client', guestMiddleware, clientRouter);
+  app.use('/api/integrations/microsoft', (req: any, res, next) => (req.user?.role === 'client' || req.path === '/callback' ? next() : guestMiddleware(req, res, next)), microsoftRouter);
+  app.use('/api/public', publicRouter);
+  app.use('/api/files', (req: any, res, next) => (req.user ? next() : guestMiddleware(req, res, next)));
+  app.use('/api', filesRouter); // /api/files/:id
+  app.use('/api', (_req, res) => res.status(404).json({ error: 'Not found.' }));
+  app.use('/api', errorHandler);
 
-      const prompt = `Analyze this certificate template image. It was designed in Adobe Illustrator or graphic software and contains outlined placeholder boxes or labeled regions marking where dynamic text, QR code, portrait photo/badge, or signature should be placed.
-Some boxes have text labels inside them like "Text", "Recipient Name", "QR code", "Image", "Signature", "Date", "Certificate No", etc.
-All other graphic elements (borders, decorative corners, logos, seals, colored stripes, watermarks, background artwork) are fixed background and must stay unchanged.
-
-Detect every outlined placeholder box or designated dynamic field region and return:
-1. "id": a unique string identifier (e.g. "field_recipient", "field_qr", "field_signature")
-2. "type": one of "text", "qr", "image", "signature"
-3. "label": clear human-readable name (e.g. "Recipient Name", "Course Title", "Verification QR Code", "Authorized Signature", "Issue Date")
-4. "x": normalized left coordinate from 0.0 to 1.0 (relative to total image width)
-5. "y": normalized top coordinate from 0.0 to 1.0 (relative to total image height)
-6. "width": normalized box width from 0.0 to 1.0
-7. "height": normalized box height from 0.0 to 1.0
-8. "fontSizeEstimate": estimated font size in pixels (e.g. 24, 36, 48)
-9. "align": text alignment ("left", "center", or "right")
-
-Coordinates MUST be normalized between 0 and 1.`;
-
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.8-flash',
-        contents: [
-          {
-            parts: [
-              {
-                inlineData: {
-                  mimeType: mimeType || 'image/png',
-                  data: imageBase64.replace(/^data:image\/\w+;base64,/, ''),
-                },
-              },
-              { text: prompt },
-            ],
-          },
-        ],
-        config: {
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                id: { type: Type.STRING },
-                type: { type: Type.STRING, enum: ['text', 'qr', 'image', 'signature'] },
-                label: { type: Type.STRING },
-                x: { type: Type.NUMBER },
-                y: { type: Type.NUMBER },
-                width: { type: Type.NUMBER },
-                height: { type: Type.NUMBER },
-                fontSizeEstimate: { type: Type.NUMBER },
-                align: { type: Type.STRING, enum: ['left', 'center', 'right'] },
-              },
-              required: ['id', 'type', 'label', 'x', 'y', 'width', 'height'],
-            },
-          },
-        },
-      });
-
-      const jsonText = response.text || '[]';
-      const parsed = JSON.parse(jsonText);
-      return res.json({ placeholders: parsed });
-    } catch (err: any) {
-      console.error('Gemini detection error:', err);
-      return res.status(500).json({ error: err.message || 'Failed to detect placeholders' });
-    }
-  });
-
-  // Serve static or Vite middleware
-  const isProd = process.env.NODE_ENV === 'production';
-  if (!isProd) {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
+  const httpServer = http.createServer(app);
+  if (process.env.API_ONLY === 'true') {
+    // API only (used by automated tests); no frontend is served.
+  } else if (!isProd) {
+    const { createServer: createViteServer } = await import('vite');
+    // Live reload shares the app's own port, so it never clashes with another running copy.
+    const vite = await createViteServer({ server: { middlewareMode: true, hmr: { server: httpServer } }, appType: 'spa' });
     app.use(vite.middlewares);
   } else {
-    app.use(express.static(path.resolve(__dirname, 'dist')));
-    app.get('*', (_req, res) => {
-      res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
-    });
+    const dist = path.resolve(__dirname, 'dist');
+    if (!fs.existsSync(path.join(dist, 'index.html'))) {
+      console.error('dist/index.html not found. Run "npm run build" first.');
+      process.exit(1);
+    }
+    app.use(express.static(dist, { index: false, maxAge: '1h' }));
+    app.get('*', (_req, res) => res.sendFile(path.join(dist, 'index.html')));
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Certificate Template Studio running at http://localhost:${PORT}`);
+  httpServer.listen(PORT, '0.0.0.0', () => {
+    const url = `http://localhost:${PORT}`;
+    console.log(`CertiGen running at ${url} (${isProd ? 'production' : 'development'})`);
+    if (process.argv.includes('--open')) openBrowser(`${url}/app`);
   });
 }
 
-startServer();
+/** Opens the default browser (used by `npm run dev`). */
+async function openBrowser(url: string) {
+  const { exec } = await import('node:child_process');
+  const cmd = process.platform === 'win32' ? `start "" "${url}"` : process.platform === 'darwin' ? `open "${url}"` : `xdg-open "${url}"`;
+  exec(cmd, () => {});
+}
+
+start().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
