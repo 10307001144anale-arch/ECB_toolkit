@@ -2,6 +2,7 @@
 
 import { db } from './db.ts';
 import { emptyLayout, sanitizeLayout } from '../shared/layout.ts';
+import { hasFormatting, richToPlain, sanitizeRich, type RichDoc } from '../shared/rich.ts';
 import type {
   ClientTemplate,
   ContentConfig,
@@ -25,6 +26,7 @@ export interface TemplateRow {
   created_by: string | null;
   created_at: number;
   updated_at: number;
+  updated_by?: string | null;
 }
 
 export interface VersionRow {
@@ -37,12 +39,12 @@ export interface VersionRow {
   published_by: string | null;
 }
 
-export function getTemplateRow(id: string): TemplateRow | undefined {
-  return db.prepare('SELECT * FROM templates WHERE id = ?').get(id) as TemplateRow | undefined;
+export async function getTemplateRow(id: string): Promise<TemplateRow | undefined> {
+  return db.one<TemplateRow>('SELECT * FROM templates WHERE id = ?', [id]);
 }
 
-export function getVersionRow(id: string): VersionRow | undefined {
-  return db.prepare('SELECT * FROM template_versions WHERE id = ?').get(id) as VersionRow | undefined;
+export async function getVersionRow(id: string): Promise<VersionRow | undefined> {
+  return db.one<VersionRow>('SELECT * FROM template_versions WHERE id = ?', [id]);
 }
 
 export function parseLayout(json: string | null | undefined): TemplateLayout {
@@ -59,10 +61,10 @@ export function layoutJson(layout: TemplateLayout): string {
   return JSON.stringify(sanitizeLayout(layout));
 }
 
-export function toSummary(row: TemplateRow): TemplateSummary {
+export async function toSummary(row: TemplateRow): Promise<TemplateSummary> {
   const draft = parseLayout(row.draft_json);
-  const version = row.current_version_id ? getVersionRow(row.current_version_id) : undefined;
-  const usage = db.prepare('SELECT COALESCE(SUM(success),0) AS n FROM batches WHERE template_id = ?').get(row.id) as { n: number };
+  const version = row.current_version_id ? await getVersionRow(row.current_version_id) : undefined;
+  const usage = (await db.one<{ n: number }>('SELECT COALESCE(SUM(success),0) AS n FROM batches WHERE template_id = ?', [row.id]))!;
   return {
     id: row.id,
     title: row.title,
@@ -80,9 +82,9 @@ export function toSummary(row: TemplateRow): TemplateSummary {
   };
 }
 
-export function toDetail(row: TemplateRow): TemplateDetail {
-  const access = db.prepare('SELECT client_id FROM template_access WHERE template_id = ?').all(row.id) as { client_id: string }[];
-  return { ...toSummary(row), draft: parseLayout(row.draft_json), assignedClientIds: access.map((a) => a.client_id) };
+export async function toDetail(row: TemplateRow): Promise<TemplateDetail> {
+  const access = await db.all<{ client_id: string }>('SELECT client_id FROM template_access WHERE template_id = ?', [row.id]);
+  return { ...(await toSummary(row)), draft: parseLayout(row.draft_json), assignedClientIds: access.map((a) => a.client_id) };
 }
 
 export function toVersion(v: VersionRow): TemplateVersion {
@@ -97,19 +99,24 @@ export function toVersion(v: VersionRow): TemplateVersion {
   };
 }
 
-/** Published templates. Every published template is public. */
-export function clientTemplates(_user: PublicUser, templateId?: string): ClientTemplate[] {
-  const rows = db
-    .prepare(
-      `SELECT t.id, t.title, t.description, v.id AS version_id, v.version_number, v.layout_json, v.published_at
-         FROM templates t JOIN template_versions v ON v.id = t.current_version_id
-        WHERE t.status = 'published'
-          ${templateId ? 'AND t.id = ?' : ''}
-        ORDER BY t.title COLLATE NOCASE`
-    )
-    .all(...(templateId ? [templateId] : [])) as any[];
+/** Removes the admin-only reference certificate before a layout is sent to a client. */
+export function clientLayout(layout: TemplateLayout): TemplateLayout {
+  return { ...layout, referenceFileId: null, referenceMime: null, referencePages: [] };
+}
+
+/** Published templates this client may use: open to all clients, or assigned to them. */
+export async function clientTemplates(user: PublicUser, templateId?: string): Promise<ClientTemplate[]> {
+  const rows = await db.all(
+    `SELECT t.id, t.title, t.description, v.id AS version_id, v.version_number, v.layout_json, v.published_at
+       FROM templates t JOIN template_versions v ON v.id = t.current_version_id
+      WHERE t.status = 'published'
+        AND (t.visibility = 'all' OR EXISTS (SELECT 1 FROM template_access a WHERE a.template_id = t.id AND a.client_id = ?))
+        ${templateId ? 'AND t.id = ?' : ''}
+      ORDER BY lower(t.title)`,
+    [user.id, ...(templateId ? [templateId] : [])]
+  );
   return rows.map((r) => {
-    const layout = parseLayout(r.layout_json);
+    const layout = clientLayout(parseLayout(r.layout_json));
     return {
       id: r.id,
       title: r.title,
@@ -163,7 +170,14 @@ export function sanitizeContent(input: any): ContentConfig {
     if (!keyOk(k)) continue;
     photos[k] = { column: cleanColumn(v?.column) };
   }
-  return { texts, qr, signatures, photos };
+  // Formatting (structured runs only — never HTML). Kept only when it matches the plain wording.
+  const rich: Record<string, RichDoc> = {};
+  for (const [k, v] of Object.entries(src.rich || {}).slice(0, 200)) {
+    if (!keyOk(k) || texts[k] === undefined) continue;
+    const doc = sanitizeRich(v, 5000);
+    if (doc && hasFormatting(doc) && richToPlain(doc) === texts[k]) rich[k] = doc;
+  }
+  return Object.keys(rich).length ? { texts, qr, signatures, photos, rich } : { texts, qr, signatures, photos };
 }
 
 export function sanitizeMapping(input: any): MappingConfig {
@@ -182,4 +196,16 @@ export function sanitizeMapping(input: any): MappingConfig {
     recipientColumn: typeof src.recipientColumn === 'string' ? src.recipientColumn.slice(0, 200) : null,
     idColumn: typeof src.idColumn === 'string' ? src.idColumn.slice(0, 200) : null,
   };
+}
+
+/** Removes formatting the administrator does not allow in a box (checked again on the server). */
+export function enforceFormatting(content: ContentConfig, layout: TemplateLayout): ContentConfig {
+  if (!content.rich) return content;
+  const rich: Record<string, RichDoc> = {};
+  for (const b of layout.boxes) {
+    if (b.type !== 'text' || !content.rich[b.key]) continue;
+    const doc = sanitizeRich(content.rich[b.key], 5000, b.formatting);
+    if (doc && hasFormatting(doc)) rich[b.key] = doc;
+  }
+  return { ...content, rich };
 }

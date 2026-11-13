@@ -1,5 +1,5 @@
-// End-to-end API smoke test. Run against a server started with API_ONLY=true:
-//   node tests/api-smoke.ts http://localhost:3999
+// End-to-end API smoke test against a running server (PostgreSQL + Storage).
+//   node tests/api-smoke.ts http://localhost:3999 [storage-mock-url]
 import assert from 'node:assert/strict';
 
 const BASE = process.argv[2] || 'http://localhost:3999';
@@ -48,11 +48,20 @@ r = await admin.req('POST', '/api/admin/files?kind=artwork&name=cert.png', undef
 assert.equal(r.status, 200); const artId = r.json.id; ok('artwork uploaded');
 r = await admin.req('POST', '/api/admin/files?kind=preview', undefined, { raw: PNG });
 const prevId = r.json.id;
+r = await admin.req('POST', '/api/admin/files?kind=reference&name=complete.png', undefined, { raw: PNG });
+assert.equal(r.status, 200); const refId = r.json.id; ok('reference certificate uploaded');
+r = await admin.req('POST', '/api/admin/files?kind=preview&role=reference', undefined, { raw: PNG });
+const refPrevId = r.json.id;
 
 r = await admin.req('POST', '/api/admin/templates', { title: 'Participation', description: 'Test' });
 assert.equal(r.status, 201); const tplId = r.json.id; ok('template created as draft');
 r = await admin.req('POST', `/api/admin/templates/${tplId}/publish`, {});
 assert.equal(r.status, 400); ok('publishing empty template blocked');
+const STORAGE = process.argv[3];
+async function storedPaths(): Promise<string[]> {
+  if (!STORAGE) return [];
+  return (await (await fetch(`${STORAGE}/__stats`, { headers: { authorization: 'Bearer test-service-key', apikey: 'test-service-key' } })).json()).objects;
+}
 
 const draft = {
   artworkFileId: artId, artworkMime: 'image/png',
@@ -61,8 +70,15 @@ const draft = {
     { id: 'b1', type: 'text', key: 'recipient_name', label: 'Recipient name', x: 10, y: 40, w: 80, h: 10,
       text: 'SNEAKY WORDING', defaultValue: 'Karma', content: 'x', defaultText: 'Awarded to {{name}}', fontFamily: 'Helvetica' },
     { id: 'b2', type: 'qr', key: 'qr', label: 'QR', x: 80, y: 80, w: 10, h: 14 },
-  ],
+    // Created in the order right, left, middle — must be numbered 1, 2, 3 from left to right.
+    { id: 's3', type: 'signature', key: 'signature', label: 'Signature', x: 70, y: 70, w: 15, h: 10, source: 'client' },
+    { id: 's1', type: 'signature', key: 'signature_2', label: 'Signature 2', x: 5, y: 70, w: 15, h: 10, source: 'client' },
+    { id: 's2', type: 'signature', key: 'signature_3', label: 'Principal', x: 40, y: 70, w: 15, h: 10, source: 'client' },
+  ] as any[],
   fonts: [],
+  referenceFileId: refId, referenceMime: 'image/png',
+  referencePages: [{ width: 842, height: 595, previewFileId: refPrevId }],
+  referenceOverlay: { opacity: 0.4, offsetX: 0, offsetY: 0, scale: 1, alignmentConfirmed: false },
 };
 r = await admin.req('PUT', `/api/admin/templates/${tplId}`, { draft });
 assert.equal(r.status, 200);
@@ -70,6 +86,26 @@ const savedBox = r.json.draft.boxes[0];
 assert.equal(savedBox.text, undefined); assert.equal(savedBox.defaultValue, undefined); assert.equal(savedBox.content, undefined);
 ok('unknown wording fields stripped server-side');
 assert.equal(savedBox.defaultText, 'Awarded to {{name}}'); ok('admin default wording saved');
+{
+  const sigs = r.json.draft.boxes.filter((x: any) => x.type === 'signature');
+  assert.deepEqual(sigs.map((x: any) => x.id), ['s1', 's2', 's3']);
+  assert.deepEqual(sigs.map((x: any) => x.key), ['signature_1', 'signature_2', 'signature_3']);
+  assert.deepEqual(sigs.map((x: any) => x.label), ['Signature 1', 'Principal', 'Signature 3']);
+  ok('signature boxes ordered and numbered 1, 2, 3 from left to right (custom label kept)');
+}
+assert.equal(r.json.draft.referenceFileId, refId); ok('reference certificate stored in the layout');
+if (STORAGE) {
+  const paths = await storedPaths();
+  assert.ok(paths.some((x) => x.includes(`templates/${tplId}/blank/${artId}`)), 'blank artwork moved into template folder');
+  assert.ok(paths.some((x) => x.includes(`templates/${tplId}/reference/${refId}`)), 'reference stored in reference folder');
+  assert.ok(paths.some((x) => x.includes(`templates/${tplId}/reference/previews/${refPrevId}`)));
+  ok('files organised in Storage: templates/{id}/blank, reference, previews');
+}
+// Mismatched reference (portrait vs landscape) blocks publishing until confirmed.
+r = await admin.req('PUT', `/api/admin/templates/${tplId}`, { draft: { ...draft, referencePages: [{ width: 595, height: 842, previewFileId: refPrevId }] } });
+r = await admin.req('POST', `/api/admin/templates/${tplId}/publish`, {});
+assert.equal(r.status, 400); assert.match(r.json.error, /portrait/); ok('mismatched reference certificate blocks publishing');
+r = await admin.req('PUT', `/api/admin/templates/${tplId}`, { draft });
 
 r = await admin.req('POST', `/api/admin/templates/${tplId}/publish`, { notes: 'first' });
 assert.equal(r.status, 200); assert.equal(r.json.status, 'published'); assert.equal(r.json.currentVersionNumber, 1); ok('published v1');
@@ -89,20 +125,29 @@ r = await a.req('GET', '/api/admin/templates'); assert.equal(r.status, 403); ok(
 await admin.req('POST', `/api/admin/templates/${tplId}/unpublish`, {});
 r = await a.req('GET', '/api/client/templates'); assert.equal(r.json.length, 0); ok('unpublished template hidden');
 r = await admin.req('POST', `/api/admin/templates/${tplId}/publish`, {}); assert.equal(r.json.currentVersionNumber, 1); ok('re-publishing unchanged layout keeps v1');
+r = await a.req('GET', '/api/client/templates'); assert.equal(r.json.length, 0); ok('new template is not visible until assigned');
+r = await new Client().req('GET', '/api/client/templates'); assert.equal(r.status, 401); ok('visitors must sign in (no public access)');
+r = await admin.req('PUT', `/api/admin/templates/${tplId}/access`, { visibility: 'assigned', clientIds: [clientA] });
+assert.deepEqual(r.json.assignedClientIds, [clientA]); ok('template assigned to client A');
 r = await a.req('GET', '/api/client/templates'); assert.equal(r.json.length, 1);
-assert.equal(r.json[0].layout.boxes[0].type, 'text'); ok('published template is public');
-r = await b.req('GET', '/api/client/templates'); assert.equal(r.json.length, 1); ok('every client sees it');
-r = await new Client().req('GET', '/api/client/templates'); assert.equal(r.json.length, 1); ok('a brand-new visitor with only the link sees it');
-r = await admin.req('PUT', `/api/admin/templates/${tplId}`, { title: 'Renamed draft title' }); r = await new Client().req('GET', '/api/client/templates'); assert.equal(r.json.length, 1); ok('saving draft changes keeps the template visible');
+assert.equal(r.json[0].layout.boxes[0].type, 'text'); ok('assigned client sees the template');
+assert.equal(r.json[0].layout.referenceFileId, null); assert.equal(r.json[0].layout.referencePages.length, 0); ok('reference certificate is never sent to clients');
+r = await b.req('GET', '/api/client/templates'); assert.equal(r.json.length, 0); ok('unassigned client does not see it');
+r = await b.req('GET', `/api/client/templates/${tplId}`); assert.equal(r.status, 404); ok('unassigned client cannot open it by direct link');
+r = await admin.req('PUT', `/api/admin/clients/${clientB}/templates`, { templateIds: [tplId] });
+r = await b.req('GET', '/api/client/templates'); assert.equal(r.json.length, 1); ok('assigning from the client page works too');
+r = await admin.req('PUT', `/api/admin/templates/${tplId}`, { title: 'Renamed draft title' }); r = await a.req('GET', '/api/client/templates'); assert.equal(r.json.length, 1); ok('saving draft changes keeps the template visible');
 await admin.req('PUT', `/api/admin/templates/${tplId}`, { title: 'Participation' });
-await admin.req('POST', `/api/admin/templates/${tplId}/archive`, {}); r = await new Client().req('GET', '/api/client/templates'); assert.equal(r.json.length, 0); ok('archived template hidden');
-r = await new Client().req('GET', `/api/client/templates/${tplId}`); assert.equal(r.status, 404); ok('archived template cannot be opened by direct link');
-await admin.req('POST', `/api/admin/templates/${tplId}/unarchive`, {}); r = await new Client().req('GET', '/api/client/templates'); assert.equal(r.json.length, 0); ok('restored template stays hidden until published');
-await admin.req('POST', `/api/admin/templates/${tplId}/publish`, {}); r = await new Client().req('GET', '/api/client/templates'); assert.equal(r.json.length, 1); ok('published again → visible again');
-r = await admin.req('GET', '/api/admin/stats'); assert.equal(r.json.storage.persistent, true); ok('storage check reported');
-r = await a.req('GET', `/api/files/${artId}`); assert.equal(r.status, 200); ok('client can download artwork of accessible template');
+await admin.req('POST', `/api/admin/templates/${tplId}/archive`, {}); r = await a.req('GET', '/api/client/templates'); assert.equal(r.json.length, 0); ok('archived template hidden');
+r = await a.req('GET', `/api/client/templates/${tplId}`); assert.equal(r.status, 404); ok('archived template cannot be opened by direct link');
+await admin.req('POST', `/api/admin/templates/${tplId}/unarchive`, {}); r = await a.req('GET', '/api/client/templates'); assert.equal(r.json.length, 0); ok('restored template stays hidden until published');
+await admin.req('POST', `/api/admin/templates/${tplId}/publish`, {}); r = await a.req('GET', '/api/client/templates'); assert.equal(r.json.length, 1); ok('published again → visible again');
+r = await admin.req('GET', '/api/admin/stats'); assert.equal(r.json.storage.persistent, true); ok('storage reported');
+r = await a.req('GET', `/api/files/${artId}`); assert.equal(r.status, 200); assert.equal(r.headers.get('content-type'), 'image/png'); ok('client can download blank artwork of an assigned template (from Storage)');
+r = await a.req('GET', `/api/files/${refId}`); assert.equal(r.status, 404); ok('clients cannot download the reference certificate');
+r = await admin.req('GET', `/api/files/${refId}`); assert.equal(r.status, 200); ok('admin can view the reference certificate');
 r = await admin.req('POST', '/api/admin/files?kind=artwork', undefined, { raw: PNG }); r = await b.req('GET', `/api/files/${r.json.id}`); assert.equal(r.status, 404); ok('files not used by a published template are private');
-r = await new Client().req('GET', `/api/files/${artId}`); assert.equal(r.status, 200); ok('public visitor can load published artwork');
+r = await new Client().req('GET', `/api/files/${artId}`); assert.equal(r.status, 401); ok('anonymous visitors cannot load files');
 
 const content = { texts: { recipient_name: '{{name}}' }, qr: { qr: { mode: 'verification', value: '' } }, signatures: {}, photos: {} };
 r = await a.req('POST', '/api/client/presets', { name: 'Participation', templateId: tplId, content });
@@ -141,31 +186,24 @@ r = await admin.req('PUT', `/api/admin/clients/${clientA}`, { active: false });
 r = await a.req('GET', '/api/auth/me'); assert.equal(r.json.user, null); ok('deactivated client is signed out');
 r = await a.req('POST', '/api/auth/login', { email: 'a@test.local', password: 'ClientPass123' }); assert.equal(r.status, 401); ok('deactivated client cannot sign in');
 
-// Public (no sign-in) access
-const g1 = new Client(); const g2 = new Client();
-r = await g1.req('GET', '/api/client/templates'); assert.equal(r.status, 200); assert.equal(r.json.length, 1); ok('public visitor sees published template without signing in');
-
-
-r = await g1.req('GET', '/api/admin/templates'); assert.equal(r.status, 401); ok('public visitor blocked from admin API');
-r = await g1.req('POST', '/api/client/presets', { name: 'Mine', templateId: tplId, content });
-assert.equal(r.status, 201); const gp = r.json.id;
-r = await g2.req('GET', '/api/client/presets'); assert.equal(r.json.length, 0); ok("public visitors don't see each other's presets");
-r = await g2.req('PUT', `/api/client/presets/${gp}`, { name: 'x' }); assert.equal(r.status, 404); ok("public visitor cannot edit another browser's preset");
-r = await g1.req('GET', '/api/client/presets'); assert.equal(r.json.length, 1); ok('public visitor keeps own preset');
-r = await g1.req('GET', '/api/integrations/microsoft/status'); assert.equal(r.status, 200); assert.equal(r.json.connected, false); ok('public visitor can check Microsoft status (per-browser connection)');
-r = await g1.req('GET', '/api/integrations/google/status'); assert.equal(r.status, 200); assert.equal(r.json.configured, false); assert.equal(r.json.connected, false); ok('Google Sheets reports not configured (no fake connection)');
-r = await g1.req('GET', '/api/integrations/google/files'); assert.equal(r.status, 503); ok('Google endpoints refuse when unconfigured');
-r = await g1.req('GET', '/api/public/config'); assert.equal(r.json.googleConfigured, false); ok('config exposes googleConfigured');
-r = await admin.req('GET', '/api/admin/clients'); const pub = r.json.find((c: any) => c.isPublic); assert.ok(pub); ok('public client listed for admins');
-await admin.req('PUT', `/api/admin/clients/${pub.id}`, { active: false });
-r = await g1.req('GET', '/api/client/templates'); assert.equal(r.status, 401); ok('turning off public access requires sign-in');
-await admin.req('PUT', `/api/admin/clients/${pub.id}`, { active: true });
-r = await new Client().req('POST', '/api/auth/login', { email: 'public@guest.invalid', password: 'disabled' }); assert.equal(r.status, 401); ok('public client cannot be signed into');
-
+r = await new Client().req('GET', '/api/admin/templates'); assert.equal(r.status, 401); ok('anonymous visitor blocked from admin API');
+r = await b.req('GET', '/api/integrations/google/status'); assert.equal(r.status, 200); assert.equal(r.json.configured, false); assert.equal(r.json.connected, false); ok('Google Sheets reports not configured (no fake connection)');
+r = await b.req('GET', '/api/integrations/google/files'); assert.equal(r.status, 503); ok('Google endpoints refuse when unconfigured');
+r = await new Client().req('GET', '/api/integrations/google/status'); assert.equal(r.status, 401); ok('integrations require sign-in');
+r = await b.req('GET', '/api/public/config'); assert.equal(r.json.googleConfigured, false); ok('config exposes googleConfigured');
 r = await b.req('GET', '/api/integrations/microsoft/status'); assert.equal(r.json.configured, false); ok('Microsoft reports not configured (no fake connection)');
 r = await b.req('GET', '/api/integrations/microsoft/files'); assert.equal(r.status, 503); ok('Graph endpoints refuse when unconfigured');
 
 r = await admin.req('GET', '/api/admin/stats'); assert.equal(r.json.certificates, 2); ok('admin stats');
+// Replace flow and large batch
+{
+  r = await b.req('POST', '/api/client/batches', { name: 'Big', templateId: tplId, versionId: (await b.req('GET', `/api/client/templates/${tplId}`)).json.versionId, content, mapping: {},
+    recipients: Array.from({ length: 2500 }, (_, i) => `Person ${i}`) });
+  assert.equal(r.status, 201); assert.equal(r.json.certificateIds.length, 2500); ok('2,500 certificate IDs issued in one batch (no quantity limit)');
+  const big = r.json.batch.id;
+  r = await b.req('POST', `/api/client/batches/${big}/complete`, { successRows: Array.from({ length: 2500 }, (_, i) => i), failedCount: 0 });
+  assert.equal(r.json.status, 'completed'); assert.equal(r.json.success, 2500); ok('large batch completed');
+}
 r = await admin.req('POST', `/api/admin/certificates/${ids[1]}/revoke`, {});
 r = await new Client().req('GET', `/api/public/verify/${ids[1]}`); assert.equal(r.json.status, 'revoked'); ok('revoked certificate reported');
 r = await admin.req('POST', '/api/auth/logout', {});

@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight, Crop, MinusCircle, Pencil, Search, XCircle } from 'lucide-react';
 import { Alert, Badge, Button, Card, Field, IconButton, Input, Modal, ProgressBar, Segmented, cx } from '../../../components/ui';
+import { substituteRich, type RichDoc } from '../../../../shared/rich';
 import { findPhoto, PREVIEW_CERT_ID, resolveCertificate, rowValues } from '../../../engine/batch';
 import { CropEditor } from './CropEditor';
 import type { PhotoBox } from '../../../../shared/types';
@@ -35,12 +36,15 @@ export function StepPreview({ w, d, set, goTo }: StepProps) {
         if (d.checks[i]?.errors.length) continue;
         const { values } = rowValues(d.ctx!, rows[i], i, PREVIEW_CERT_ID);
         const texts: Record<string, string> = {};
+        const rich: Record<string, RichDoc> = {};
         for (const b of w.template!.layout.boxes) {
           if (b.type !== 'text') continue;
           const r = resolvePlaceholders(w.content.texts[b.key] || '', values, d.registered);
           texts[b.key] = r.missing.length && !b.required ? '' : r.text;
+          const doc = w.content.rich?.[b.key];
+          if (doc && texts[b.key]) rich[b.key] = substituteRich(doc, (tok) => resolvePlaceholders(tok, values, d.registered).text, d.registered);
         }
-        const warns = await renderer.checkText(texts);
+        const warns = await renderer.checkText(texts, rich);
         if (warns.length) map.set(i, warns.map((x) => x.message));
         if (i % 25 === 0) {
           setCheckProgress(Math.round((i / rows.length) * 100));

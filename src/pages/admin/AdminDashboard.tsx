@@ -17,7 +17,7 @@ interface Stats {
   certificates: number;
   batches: number;
   frequentTemplates: { id: string; title: string; batches: number; certificates: number }[];
-  storage?: { persistent: boolean; dataDir: string };
+  storage?: { persistent: boolean; dataDir: string; cloud?: { enabled: boolean; lastSavedAt: number | null; lastError: string | null } };
 }
 
 export default function AdminDashboard() {
@@ -50,8 +50,17 @@ export default function AdminDashboard() {
       {error && <p className="text-sm text-red-600">{error}</p>}
       {stats?.storage && !stats.storage.persistent && (
         <Alert tone="error" className="mb-5" title="Templates are not stored permanently">
-          The server is saving data in <code>{stats.storage.dataDir}</code>, which is wiped on every restart or redeploy, so published templates would disappear. On Render, add a
-          persistent disk mounted at <code>/var/data</code> and set <code>DATA_DIR=/var/data</code>.
+          The server is saving data in <code>{stats.storage.dataDir}</code>, which is wiped on every restart or redeploy, so published templates would disappear. Connect the free
+          cloud database (set <code>DATABASE_URL</code> — see README “Keep data on Render's free plan”), or add a persistent disk.
+        </Alert>
+      )}
+      {stats?.storage?.cloud?.enabled && (
+        <Alert tone={stats.storage.cloud.lastError ? 'error' : 'success'} className="mb-5" title={stats.storage.cloud.lastError ? 'Cloud database: last save failed' : 'Data is saved to the cloud database'}>
+          {stats.storage.cloud.lastError
+            ? stats.storage.cloud.lastError
+            : stats.storage.cloud.lastSavedAt
+              ? `Templates and certificate records survive restarts and redeploys. Last saved ${timeAgo(stats.storage.cloud.lastSavedAt)}.`
+              : 'Templates and certificate records survive restarts and redeploys.'}
         </Alert>
       )}
       {!stats ? (

@@ -24,7 +24,8 @@ import QRCode from 'qrcode';
 import type { PhotoBox, PhotoCrop, QrBox, SignatureBox, TemplateLayout, TextBox } from '../../shared/types';
 import { signatureSplit, type SignatureSplit } from '../../shared/layout';
 import { FontEmbedder, registerBrowserFont, type EmbeddedFont, type FileFetcher } from './fonts';
-import { layoutText, TEXT_PADDING, type Measurer } from './textLayout';
+import { applyTransform, layoutRich, layoutText, styleOf, TEXT_PADDING, type Measurer, type RichStyle, type StyledMeasurer } from './textLayout';
+import { ALL_FORMATTING, hasFormatting, richToPlain, type RichDoc } from '../../shared/rich';
 import { autoCrop, detectFocus, prepareImage, type SignaturePlacement } from './images';
 
 export interface ResolvedCertificate {
@@ -40,6 +41,8 @@ export interface ResolvedCertificate {
   placements?: Record<string, SignaturePlacement | undefined>;
   /** Signer name / title printed under each signature. */
   signers?: Record<string, { name: string; title: string } | undefined>;
+  /** Formatted wording per text box (placeholders already replaced). Overrides texts[key] when present. */
+  rich?: Record<string, RichDoc | undefined>;
 }
 
 export interface RenderWarning {
@@ -223,7 +226,9 @@ export class CertificateRenderer {
         };
         if (box.type === 'text') {
           const value = cert.texts[box.key];
-          if (value && value.trim()) warnings.push(...(await this.drawText(ctx, page, box, rect, value)));
+          const rich = cert.rich?.[box.key];
+          if (rich && hasFormatting(rich) && richToPlain(rich).trim()) warnings.push(...(await this.drawRichText(ctx, page, box, rect, rich)));
+          else if (value && value.trim()) warnings.push(...(await this.drawText(ctx, page, box, rect, value)));
         } else if (box.type === 'qr') {
           const value = cert.qr[box.key];
           if (value && value.trim()) this.drawQr(page, box, rect, value);
@@ -334,6 +339,63 @@ export class CertificateRenderer {
     return warnings;
   }
 
+  /** Loads the fonts for every style used and returns a measurer + font lookup. */
+  private async richFonts(ctx: DocContext, box: TextBox, doc: RichDoc) {
+    const fonts = new Map<string, EmbeddedFont>();
+    const keyOf = (st: RichStyle) => `${st.bold ? 7 : 4}${st.italic ? 'i' : 'n'}`;
+    for (const p of doc.paragraphs)
+      for (const r of p.runs) {
+        const st = styleOf(r, box);
+        const k = keyOf(st);
+        if (!fonts.has(k)) fonts.set(k, await ctx.fonts.get({ fontFamily: box.fontFamily, fontWeight: st.bold ? '700' : '400', italic: st.italic }));
+      }
+    const fontFor = (st: RichStyle) => fonts.get(keyOf(st))!;
+    const measurer: StyledMeasurer = { width: (t, size, st) => fontFor(st).font.widthOfTextAtSize(t, size) };
+    const needsRaster = doc.paragraphs.some((p) => p.runs.some((r) => /[ༀ-࿿]/.test(r.text) || !fontFor(styleOf(r, box)).supports(applyTransform(r.text, box.transform))));
+    return { fontFor, measurer, needsRaster };
+  }
+
+  /** Layout of formatted wording (shared by drawing and the overflow check). */
+  private async layoutRichFor(ctx: DocContext, box: TextBox, rect: { w: number; h: number }, doc: RichDoc) {
+    const f = await this.richFonts(ctx, box, doc);
+    return { ...f, result: f.needsRaster ? null : layoutRich(doc, box, rect.w, rect.h, f.measurer) };
+  }
+
+  /** Formatted wording: bold/italic/underline, colour, highlight, size and alignment per run. */
+  private async drawRichText(ctx: DocContext, page: PDFPage, box: TextBox, rect: { x: number; top: number; w: number; h: number }, doc: RichDoc): Promise<RenderWarning[]> {
+    const { fontFor, result } = await this.layoutRichFor(ctx, box, rect, doc);
+    if (!result) {
+      // Scripts that need the browser's text shaping (e.g. Dzongkha) are drawn without formatting.
+      const w = await this.drawText(ctx, page, box, rect, richToPlain(doc));
+      return [...w, { boxKey: box.key, label: box.label, kind: 'font-fallback', message: `"${box.label}" uses characters that cannot be formatted; it is shown without bold/colour formatting.` }];
+    }
+    const warnings: RenderWarning[] = [];
+    if (result.overflow) warnings.push({ boxKey: box.key, label: box.label, kind: 'overflow', message: `"${box.label}" is too long to fit, even at the smallest font size. It was shortened.` });
+    const innerH = rect.h - TEXT_PADDING * 2;
+    const innerW = rect.w - TEXT_PADDING * 2;
+    const offset = box.vAlign === 'top' ? 0 : box.vAlign === 'bottom' ? innerH - result.height : (innerH - result.height) / 2;
+    page.pushOperators(pushGraphicsState());
+    if (box.letterSpacing) page.pushOperators(setCharacterSpacing(box.letterSpacing));
+    result.lines.forEach((line, i) => {
+      const baseline = rect.top - TEXT_PADDING - offset - result.baselines[i];
+      let x = rect.x + TEXT_PADDING + (line.align === 'center' ? (innerW - line.width) / 2 : line.align === 'right' ? innerW - line.width : 0);
+      for (const fr of line.fragments) {
+        const size = result.fontSize * fr.style.scale;
+        if (fr.style.bg) {
+          page.drawRectangle({ x, y: baseline - size * 0.24, width: fr.width, height: size * 1.12, color: hexColor(fr.style.bg) });
+        }
+        if (fr.text.trim()) page.drawText(fr.text, { x, y: baseline, size, font: fontFor(fr.style).font, color: hexColor(fr.style.color) });
+        if (fr.style.underline) {
+          const uy = baseline - size * 0.12;
+          page.drawLine({ start: { x, y: uy }, end: { x: x + fr.width, y: uy }, thickness: Math.max(0.4, size * 0.06), color: hexColor(fr.style.color) });
+        }
+        x += fr.width;
+      }
+    });
+    page.pushOperators(popGraphicsState());
+    return warnings;
+  }
+
   /** Browser-shaped text, embedded as a high-resolution transparent image. */
   private async drawRaster(
     ctx: DocContext,
@@ -424,6 +486,8 @@ export class CertificateRenderer {
         w: 0,
         h: 0,
         defaultText: '',
+        defaultRich: null,
+        formatting: ALL_FORMATTING,
         fontFamily: c.fontFamily,
         fontWeight: bold ? '700' : '400',
         italic: false,
@@ -512,7 +576,7 @@ export class CertificateRenderer {
   }
 
   /** Fast overflow check for text boxes only (no PDF is produced). */
-  async checkText(texts: Record<string, string>): Promise<RenderWarning[]> {
+  async checkText(texts: Record<string, string>, rich?: Record<string, RichDoc | undefined>): Promise<RenderWarning[]> {
     if (!this.measureCtx) {
       const doc = await PDFDocument.create();
       this.measureCtx = { doc, fonts: new FontEmbedder(doc, this.layout.fonts, this.fetchFile), art: { kind: 'pdf', pages: [] }, imageCache: new Map() };
@@ -524,8 +588,9 @@ export class CertificateRenderer {
       if (!value || !value.trim()) continue;
       const g = this.geometry[box.page] || this.geometry[0];
       const rect = { w: (box.w / 100) * g.width, h: (box.h / 100) * g.height };
-      const { result } = await this.layoutFor(this.measureCtx, box, rect, value);
-      if (result.overflow) {
+      const r = rich?.[box.key];
+      const overflow = r && hasFormatting(r) ? !!(await this.layoutRichFor(this.measureCtx, box, rect, r)).result?.overflow : (await this.layoutFor(this.measureCtx, box, rect, value)).result.overflow;
+      if (overflow) {
         out.push({ boxKey: box.key, label: box.label, kind: 'overflow', message: `"${box.label}" does not fit in its box.` });
       }
     }

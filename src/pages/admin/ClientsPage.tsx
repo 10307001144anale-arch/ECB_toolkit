@@ -66,7 +66,7 @@ export default function ClientsPage() {
     <>
       <PageHeader
         title="Clients"
-        description="Anyone can create certificates without signing in (the Public client). Named client accounts get their own presets, history and Microsoft Excel access."
+        description="Clients sign in to create certificates. Each client sees only the templates assigned to them (or templates open to all clients)."
         actions={
           <Button variant="primary" icon={<Plus className="h-4 w-4" />} onClick={() => setEditing('new')}>
             New client

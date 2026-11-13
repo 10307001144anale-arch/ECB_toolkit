@@ -28,14 +28,16 @@ import {
 } from 'lucide-react';
 import { api, fetchFile, getConfig, type AppConfig } from '../../lib/api';
 import { setNavigationBlocker, useRouter } from '../../lib/router';
-import { Alert, Badge, Button, Field, IconButton, Input, Menu, Modal, Spinner, Textarea, cx, useConfirm } from '../../components/ui';
+import { Alert, Badge, Button, Field, IconButton, Input, Menu, Modal, Segmented, Spinner, Textarea, Toggle, cx, useConfirm } from '../../components/ui';
 import { useToast } from '../../context/ToastContext';
-import { newBox, publishProblems, sanitizeLayout, uniqueKey } from '../../../shared/layout';
+import { checkReferenceAlignment, newBox, publishProblems, sanitizeLayout, signatureOrder, uniqueKey } from '../../../shared/layout';
 import type { BoxType, TemplateBox, TemplateDetail, TemplateLayout, TemplateVersion } from '../../../shared/types';
 import { BOX_STYLE, DesignCanvas, type Rect, type Tool } from './designer/DesignCanvas';
 import { BoxProperties, FontManager, Section } from './designer/BoxProperties';
 import { StatusBadge } from './TemplatesPage';
-import { processArtwork } from '../../engine/artwork';
+import { processArtwork, processReference } from '../../engine/artwork';
+import { realisticCertificate } from '../../engine/samples';
+import { emptyContent } from '../../engine/batch';
 import { CertificateRenderer } from '../../engine/renderer';
 import { renderPdfPage } from '../../engine/pdfRaster';
 import { formatDateTime } from '../../lib/format';
@@ -72,6 +74,8 @@ export default function TemplateDesigner({ id }: { id: string }) {
   const [zoom, setZoom] = useState<number | 'fit'>('fit');
   const [fitScale, setFitScale] = useState(1);
   const [preview, setPreview] = useState<{ url: string; page: number } | null>(null);
+  const [view, setView] = useState<'blank' | 'reference' | 'overlay'>('blank');
+  const viewInit = useRef(false);
   const [previewBusy, setPreviewBusy] = useState(false);
   const [artBusy, setArtBusy] = useState<string | null>(null);
   const [publishOpen, setPublishOpen] = useState(false);
@@ -87,6 +91,10 @@ export default function TemplateDesigner({ id }: { id: string }) {
   }, []);
 
   const applyDetail = useCallback((d: TemplateDetail) => {
+    if (!viewInit.current) {
+      viewInit.current = true;
+      if (d.draft.referenceFileId) setView('overlay');
+    }
     setTpl(d);
     setLayout(d.draft);
     committed.current = d.draft;
@@ -288,16 +296,38 @@ export default function TemplateDesigner({ id }: { id: string }) {
       if (!ok) return;
     }
     try {
-      const art = await processArtwork(file, setArtBusy);
-      update((l) => ({ ...l, ...art, boxes: l.boxes.map((b) => (b.page >= art.pages.length ? { ...b, page: art.pages.length - 1 } : b)) }));
+      const art = await processArtwork(file, setArtBusy, { templateId: id });
+      update((l) => ({
+        ...l,
+        ...art,
+        referenceOverlay: { ...l.referenceOverlay, alignmentConfirmed: false },
+        boxes: l.boxes.map((b) => (b.page >= art.pages.length ? { ...b, page: art.pages.length - 1 } : b)),
+      }));
       setPage(0);
-      showToast('Artwork uploaded. Remember to save.', 'success');
+      showToast('Blank design uploaded. Remember to save.', 'success');
     } catch (e: any) {
       showToast(e.message, 'error');
     } finally {
       setArtBusy(null);
     }
   };
+
+  const replaceReference = async (file: File | undefined) => {
+    if (!file || !layout) return;
+    try {
+      const ref = await processReference(file, setArtBusy, id);
+      update((l) => ({ ...l, ...ref, referenceOverlay: { ...l.referenceOverlay, alignmentConfirmed: false, offsetX: 0, offsetY: 0, scale: 1 } }));
+      setView('overlay');
+      showToast('Reference certificate uploaded. Remember to save.', 'success');
+    } catch (e: any) {
+      showToast(e.message, 'error');
+    } finally {
+      setArtBusy(null);
+    }
+  };
+
+  const setOverlay = (patch: Partial<TemplateLayout['referenceOverlay']>, commit = true) =>
+    update((l) => ({ ...l, referenceOverlay: { ...l.referenceOverlay, ...patch } }), commit);
 
   const togglePreview = async () => {
     if (preview) return setPreview(null);
@@ -306,18 +336,9 @@ export default function TemplateDesigner({ id }: { id: string }) {
     try {
       const clean = sanitizeLayout(layout);
       const renderer = await CertificateRenderer.load(clean, fetchFile);
-      const texts: Record<string, string> = {};
-      const qr: Record<string, string> = {};
-      const images: Record<string, Blob | null> = {};
-      const signers: Record<string, { name: string; title: string }> = {};
-      for (const b of clean.boxes) {
-        if (b.type === 'signature' && b.caption.enabled) signers[b.key] = { name: b.caption.name || 'Signer name', title: b.caption.title };
-        if (b.type === 'text') texts[b.key] = b.defaultText || (b.multiline ? `${b.label}\nSecond line of sample text` : `Sample: ${b.label}`);
-        if (b.type === 'qr') qr[b.key] = `${window.location.origin}/verify/CG-SAMP-LE00-0000`;
-        if (b.type === 'signature') images[b.key] = renderer.fixedSignature(b.key);
-        if (b.type === 'photo') images[b.key] = null;
-      }
-      const { bytes } = await renderer.renderSingle({ texts, qr, images, signers }, { placeholders: true });
+      // Realistic sample: default wording with example details, example photo, signature and QR code.
+      const cert = await realisticCertificate(clean, emptyContent(clean), window.location.origin, (k) => renderer.fixedSignature(k), undefined, { exampleTextForEmptyBoxes: true });
+      const { bytes } = await renderer.renderSingle(cert, { placeholders: true });
       const canvas = await renderPdfPage(bytes, page, 1600, undefined, 1);
       setPreview({ url: canvas.toDataURL('image/png'), page });
     } catch (e: any) {
@@ -345,7 +366,11 @@ export default function TemplateDesigner({ id }: { id: string }) {
   if (!tpl || !layout) return <Spinner className="min-h-screen" label="Opening designer…" />;
 
   const archived = tpl.status === 'archived';
-  const pageBoxes = layout.boxes.filter((b) => b.page === page);
+  const sigNumbers = new Map(signatureOrder(layout.boxes).map((b, i) => [b.id, i + 1]));
+  const pageBoxes = layout.boxes
+    .filter((b) => b.page === page)
+    .sort((a, b) => (a.type === 'signature' && b.type === 'signature' ? sigNumbers.get(a.id)! - sigNumbers.get(b.id)! : 0));
+  const alignment = checkReferenceAlignment(layout);
 
   return (
     <div className="flex h-screen flex-col bg-slate-100">
@@ -427,12 +452,51 @@ export default function TemplateDesigner({ id }: { id: string }) {
         {/* Left sidebar */}
         <aside className="flex w-60 shrink-0 flex-col border-r border-slate-200 bg-white">
           <div className="border-b border-slate-200 p-3">
-            <label className={cx('flex cursor-pointer items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium', layout.pages.length ? 'border-slate-300 text-slate-700 hover:bg-slate-50' : 'border-brand-600 bg-brand-700 text-white hover:bg-brand-800')}>
-              {artBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ImagePlus className="h-4 w-4" />}
-              {artBusy ? 'Uploading…' : layout.pages.length ? 'Replace artwork' : 'Upload artwork'}
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Design files</p>
+            <label className={cx('flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium', layout.referenceFileId ? 'border-slate-300 text-slate-700 hover:bg-slate-50' : 'border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100')}>
+              <ImagePlus className="h-4 w-4 shrink-0" />
+              <span className="flex-1">{layout.referenceFileId ? 'Replace reference (A)' : 'Upload reference (A)'}</span>
+              <input type="file" accept=".pdf,.png,.jpg,.jpeg" className="sr-only" disabled={!!artBusy || archived} onChange={(e) => replaceReference(e.target.files?.[0])} />
+            </label>
+            <label className={cx('mt-1.5 flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium', layout.pages.length ? 'border-slate-300 text-slate-700 hover:bg-slate-50' : 'border-brand-600 bg-brand-700 text-white hover:bg-brand-800')}>
+              {artBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ImagePlus className="h-4 w-4 shrink-0" />}
+              <span className="flex-1">{layout.pages.length ? 'Replace blank design (B)' : 'Upload blank design (B)'}</span>
               <input type="file" accept=".pdf,.png,.jpg,.jpeg" className="sr-only" disabled={!!artBusy || archived} onChange={(e) => replaceArtwork(e.target.files?.[0])} />
             </label>
             {artBusy && <p className="mt-1.5 text-xs text-slate-500">{artBusy}</p>}
+            {layout.pages.length > 0 && (
+              <div className="mt-3 space-y-2">
+                <Segmented
+                  size="sm"
+                  ariaLabel="Canvas view"
+                  value={view}
+                  onChange={setView}
+                  options={[
+                    { value: 'blank', label: 'Blank', title: 'The blank design (used in the PDF)' },
+                    { value: 'overlay', label: 'Overlay', title: 'Reference certificate over the blank design' },
+                    { value: 'reference', label: 'Reference', title: 'The complete reference certificate' },
+                  ]}
+                />
+                {!layout.referenceFileId && view !== 'blank' && <p className="text-xs text-amber-700">Upload the reference certificate to compare.</p>}
+                {layout.referenceFileId && view === 'overlay' && (
+                  <label className="flex items-center gap-2 text-xs text-slate-600">
+                    Opacity
+                    <input
+                      type="range"
+                      min={5}
+                      max={100}
+                      value={Math.round(layout.referenceOverlay.opacity * 100)}
+                      onChange={(e) => setOverlay({ opacity: +e.target.value / 100 }, false)}
+                      onPointerUp={() => setOverlay({}, true)}
+                      className="flex-1"
+                      aria-label="Reference opacity"
+                    />
+                    <span className="w-8 text-right tabular-nums">{Math.round(layout.referenceOverlay.opacity * 100)}%</span>
+                  </label>
+                )}
+                <p className="text-[11px] leading-snug text-slate-500">The reference is a locked guide. Only the blank design is used in certificates; it is never changed.</p>
+              </div>
+            )}
           </div>
           <div className="border-b border-slate-200 p-3">
             <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Add a box</p>
@@ -474,7 +538,10 @@ export default function TemplateDesigner({ id }: { id: string }) {
                       className={cx('flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm', b.id === selectedId ? 'bg-slate-100 font-medium text-slate-900' : 'text-slate-600 hover:bg-slate-50')}
                     >
                       <span className={cx('flex h-5 w-5 shrink-0 items-center justify-center rounded text-white', BOX_STYLE[b.type].chip)}>{BOX_STYLE[b.type].icon}</span>
-                      <span className="truncate">{b.label}</span>
+                      <span className="truncate">
+                        {b.type === 'signature' ? `${sigNumbers.get(b.id)}. ` : ''}
+                        {b.label}
+                      </span>
                       {b.required && <span className="ml-auto text-[10px] text-slate-400">required</span>}
                     </button>
                   </li>
@@ -508,6 +575,7 @@ export default function TemplateDesigner({ id }: { id: string }) {
               onCreate={createBox}
               onRectChange={(bid, rect, commit) => !archived && patchBox(bid, rect, commit)}
               previewUrl={preview && preview.page === page ? preview.url : null}
+              view={view}
             />
           )}
           {layout.pages.length > 0 && (
@@ -540,7 +608,7 @@ export default function TemplateDesigner({ id }: { id: string }) {
           )}
           {preview && (
             <div className="absolute left-1/2 top-3 -translate-x-1/2 rounded-full bg-slate-900/80 px-3 py-1 text-xs text-white">
-              Preview with default wording (sample text where a box has none)
+              Preview with example details{layout.referenceFileId ? ' — choose “Overlay” on the left to compare it with the reference certificate' : ''}
             </div>
           )}
         </section>
@@ -586,6 +654,62 @@ export default function TemplateDesigner({ id }: { id: string }) {
                 <p className="text-xs text-slate-500">Upload your organisation's fonts if the built-in ones don't match the design.</p>
                 <FontManager fonts={layout.fonts} onChange={(fonts) => update((l) => ({ ...l, fonts }))} />
               </Section>
+              {layout.referenceFileId && (
+                <Section title="Reference alignment" defaultOpen={alignment.problems.length > 0}>
+                  {alignment.problems.length === 0 ? (
+                    <Alert tone="success">The reference certificate and the blank design have matching pages.</Alert>
+                  ) : (
+                    <Alert tone={alignment.ok ? 'info' : 'warning'} title={alignment.ok ? 'Alignment confirmed' : 'The two files do not match'}>
+                      <ul className="list-disc pl-4">
+                        {alignment.problems.map((p) => (
+                          <li key={p}>{p}</li>
+                        ))}
+                      </ul>
+                    </Alert>
+                  )}
+                  <p className="text-xs text-slate-500">Line the overlay up with the blank design (Overlay view), then confirm.</p>
+                  {(
+                    [
+                      ['offsetX', 'Move left / right', -20, 20, 0.1, '%'],
+                      ['offsetY', 'Move up / down', -20, 20, 0.1, '%'],
+                      ['scale', 'Size', 0.8, 1.25, 0.005, '×'],
+                    ] as const
+                  ).map(([k, label, min, max, step, unit]) => (
+                    <label key={k} className="flex items-center gap-2 text-xs text-slate-600">
+                      <span className="w-28">{label}</span>
+                      <input
+                        type="range"
+                        min={min}
+                        max={max}
+                        step={step}
+                        value={layout.referenceOverlay[k]}
+                        onChange={(e) => setOverlay({ [k]: +e.target.value } as any, false)}
+                        onPointerUp={() => setOverlay({}, true)}
+                        className="flex-1"
+                        aria-label={label}
+                        onFocus={() => setView('overlay')}
+                      />
+                      <span className="w-12 text-right tabular-nums">
+                        {k === 'scale' ? layout.referenceOverlay.scale.toFixed(3) : layout.referenceOverlay[k].toFixed(1)}
+                        {unit}
+                      </span>
+                    </label>
+                  ))}
+                  <div className="flex items-center justify-between">
+                    <button type="button" className="text-xs font-medium text-brand-700 hover:underline" onClick={() => setOverlay({ offsetX: 0, offsetY: 0, scale: 1 })}>
+                      Reset calibration
+                    </button>
+                  </div>
+                  {alignment.problems.length > 0 && (
+                    <Toggle
+                      checked={layout.referenceOverlay.alignmentConfirmed}
+                      onChange={(v) => setOverlay({ alignmentConfirmed: v })}
+                      label="I checked the overlay — the boxes line up"
+                      description="Required before publishing when the files differ."
+                    />
+                  )}
+                </Section>
+              )}
               <Section title="Before publishing">
                 {problems.length === 0 ? (
                   <Alert tone="success">Ready to publish.</Alert>

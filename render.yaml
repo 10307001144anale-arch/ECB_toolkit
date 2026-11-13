@@ -4,20 +4,20 @@ services:
     name: certigen
     runtime: node
     region: singapore          # closest Render region to Bhutan
-    plan: starter              # free plan cannot keep data (no persistent disk)
+    plan: free                 # data lives in Supabase, so no disk is needed
     buildCommand: npm install --include=dev && npm run build
     startCommand: npm start
     healthCheckPath: /api/health
     autoDeploy: true           # every push to main redeploys
-    disk:
-      name: certigen-data      # SQLite database + uploaded template files
-      mountPath: /var/data
-      sizeGB: 1
     envVars:
       - key: NODE_VERSION
         value: "24"
-      - key: DATA_DIR
-        value: /var/data
+      - key: SUPABASE_DB_URL
+        sync: false            # Supabase → Connect → Session pooler
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
       - key: TRUST_PROXY
         value: "true"
       - key: APP_SECRET

@@ -16,9 +16,10 @@ dotenv.config();
 const isProd = process.env.NODE_ENV === 'production' || process.argv.includes('--production');
 if (isProd) process.env.NODE_ENV = 'production';
 
-// Imported after dotenv so DATA_DIR / APP_SECRET are available.
-const { db, logActivity } = await import('./server/db.ts');
-const { sessionMiddleware, guestMiddleware, createUser, passwordProblem, purgeExpiredSessions } = await import('./server/auth.ts');
+// Imported after dotenv so SUPABASE_* / APP_SECRET are available.
+const { db, initDb, logActivity } = await import('./server/db.ts');
+const { ensureBucket } = await import('./server/storage.ts');
+const { sessionMiddleware, createUser, passwordProblem, purgeExpiredSessions } = await import('./server/auth.ts');
 const { csrfGuard, errorHandler, securityHeaders } = await import('./server/http.ts');
 const { authRouter } = await import('./server/routes/auth.ts');
 const { adminRouter } = await import('./server/routes/admin.ts');
@@ -31,8 +32,8 @@ const { googleRouter } = await import('./server/routes/google.ts');
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /** Creates the first administrator from ADMIN_EMAIL / ADMIN_PASSWORD when no admin exists. */
-function bootstrapAdmin() {
-  const hasAdmin = db.prepare("SELECT 1 FROM users WHERE role = 'admin' LIMIT 1").get();
+async function bootstrapAdmin() {
+  const hasAdmin = await db.one("SELECT 1 FROM users WHERE role = 'admin' LIMIT 1");
   if (hasAdmin) return;
   const email = process.env.ADMIN_EMAIL?.trim().toLowerCase();
   const password = process.env.ADMIN_PASSWORD || '';
@@ -49,15 +50,18 @@ function bootstrapAdmin() {
     console.warn(`  ADMIN_PASSWORD rejected: ${problem}`);
     return;
   }
-  const u = createUser({ email, name: process.env.ADMIN_NAME || 'Administrator', password, role: 'admin' });
-  logActivity(u.id, 'admin_bootstrapped', email);
+  const u = await createUser({ email, name: process.env.ADMIN_NAME || 'Administrator', password, role: 'admin' });
+  await logActivity(u.id, 'admin_bootstrapped', email);
   console.log(`  Created administrator account ${email}. You can remove ADMIN_PASSWORD from .env now.`);
 }
 
 async function start() {
-  bootstrapAdmin();
-  purgeExpiredSessions();
-  setInterval(purgeExpiredSessions, 60 * 60 * 1000).unref();
+  console.log('Connecting to Supabase…');
+  await initDb();
+  await ensureBucket();
+  await bootstrapAdmin();
+  await purgeExpiredSessions();
+  setInterval(() => purgeExpiredSessions().catch((e) => console.error('[sessions]', e.message)), 60 * 60 * 1000).unref();
 
   const app = express();
   const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
@@ -77,13 +81,13 @@ async function start() {
   app.use('/api/auth', authRouter);
   app.use('/api/admin/ai', aiRouter);
   app.use('/api/admin', adminRouter);
-  app.use('/api/client', guestMiddleware, clientRouter);
-  // Spreadsheet integrations: signed-in clients use their account, everyone else their anonymous browser.
-  const integrationAccess = (req: any, res: any, next: any) => (req.user?.role === 'client' || req.path === '/callback' ? next() : guestMiddleware(req, res, next));
+  app.use('/api/client', clientRouter);
+  // Spreadsheet integrations: signed-in clients only (the OAuth callback carries its own state cookie).
+  const integrationAccess = (req: any, res: any, next: any) =>
+    req.user?.role === 'client' || req.path === '/callback' ? next() : res.status(401).json({ error: 'Please sign in.' });
   app.use('/api/integrations/microsoft', integrationAccess, microsoftRouter);
   app.use('/api/integrations/google', integrationAccess, googleRouter);
   app.use('/api/public', publicRouter);
-  app.use('/api/files', (req: any, res, next) => (req.user ? next() : guestMiddleware(req, res, next)));
   app.use('/api', filesRouter); // /api/files/:id
   app.use('/api', (_req, res) => res.status(404).json({ error: 'Not found.' }));
   app.use('/api', errorHandler);

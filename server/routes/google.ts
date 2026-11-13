@@ -76,7 +76,7 @@ googleRouter.get(
     try {
       const tokens = await tokenRequest({ grant_type: 'authorization_code', code: String(req.query.code || ''), redirect_uri: redirectUri(), code_verifier: st.verifier });
       const me: any = await fetch('https://openidconnect.googleapis.com/v1/userinfo', { headers: { Authorization: `Bearer ${tokens.access_token}` } }).then((r) => (r.ok ? r.json() : null));
-      saveConnection(st.owner, 'google', tokens, me?.email || me?.name || null);
+      await saveConnection(st.owner, 'google', tokens, me?.email || me?.name || null);
       done('connected');
     } catch (err: any) {
       console.error('[google] token exchange failed:', err?.message);
@@ -85,9 +85,12 @@ googleRouter.get(
   })
 );
 
-googleRouter.get('/status', (req: AuthedRequest, res) => {
-  res.json({ configured: googleConfigured(), ...connectionStatus(ownerOf(req), 'google') });
-});
+googleRouter.get(
+  '/status',
+  h(async (req: AuthedRequest, res) => {
+    res.json({ configured: googleConfigured(), ...(await connectionStatus(ownerOf(req), 'google')) });
+  })
+);
 
 googleRouter.get(
   '/connect',
@@ -113,7 +116,7 @@ googleRouter.get(
 googleRouter.post(
   '/disconnect',
   h(async (req: AuthedRequest, res) => {
-    const tok = deleteConnection(ownerOf(req), 'google');
+    const tok = await deleteConnection(ownerOf(req), 'google');
     // Revoke at Google too, so the app's access is fully removed.
     if (tok) await fetch(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(tok)}`, { method: 'POST' }).catch(() => {});
     res.json({ ok: true });

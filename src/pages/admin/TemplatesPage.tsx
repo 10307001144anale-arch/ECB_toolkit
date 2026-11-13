@@ -6,7 +6,9 @@ import { Alert, Badge, Button, Card, EmptyState, Field, IconButton, Input, Menu,
 import { useToast } from '../../context/ToastContext';
 import { emptyLayout } from '../../../shared/layout';
 import type { TemplateDetail, TemplateStatus, TemplateSummary } from '../../../shared/types';
-import { processArtwork } from '../../engine/artwork';
+import { processArtwork, processReference } from '../../engine/artwork';
+import { AccessModal } from './AccessModal';
+import { checkReferenceAlignment } from '../../../shared/layout';
 import { formatDateOnly } from '../../lib/format';
 
 export function StatusBadge({ t }: { t: Pick<TemplateSummary, 'status' | 'hasUnpublishedChanges' | 'currentVersionNumber'> }) {
@@ -14,7 +16,7 @@ export function StatusBadge({ t }: { t: Pick<TemplateSummary, 'status' | 'hasUnp
   if (t.status === 'published')
     return (
       <span className="inline-flex items-center gap-1.5">
-        <Badge tone="green">Public · v{t.currentVersionNumber}</Badge>
+        <Badge tone="green">Published · v{t.currentVersionNumber}</Badge>
         {t.hasUnpublishedChanges && <Badge tone="amber">Changes not published yet</Badge>}
       </span>
     );
@@ -30,6 +32,7 @@ export default function TemplatesPage() {
   const [tab, setTab] = useState<'all' | TemplateStatus>('all');
   const [q, setQ] = useState('');
   const [newOpen, setNewOpen] = useState(false);
+  const [accessFor, setAccessFor] = useState<TemplateSummary | null>(null);
 
   const load = useCallback(() => {
     api
@@ -152,6 +155,7 @@ export default function TemplatesPage() {
                     )}
                     items={[
                       { label: 'Edit design', icon: <Pencil className="h-4 w-4" />, onClick: () => navigate(`/admin/templates/${t.id}`), disabled: t.status === 'archived' },
+                      { label: 'Client access', icon: <Users className="h-4 w-4" />, onClick: () => setAccessFor(t) },
                       { label: 'Duplicate', icon: <Copy className="h-4 w-4" />, onClick: () => act(t, 'duplicate') },
                       ...(t.status === 'published'
                         ? [{ label: 'Hide from clients', icon: <EyeOff className="h-4 w-4" />, onClick: () => act(t, 'unpublish') }]
@@ -170,7 +174,7 @@ export default function TemplatesPage() {
                   <StatusBadge t={t} />
                 </div>
                 <p className="mt-3 text-xs text-slate-500">
-                  {t.boxCount} {t.boxCount === 1 ? 'box' : 'boxes'} · {t.status === 'published' ? 'Public' : 'Not visible to users'} · Updated {formatDateOnly(t.updatedAt)}
+                  {t.boxCount} {t.boxCount === 1 ? 'box' : 'boxes'} · {t.status !== 'published' ? 'Not visible to clients' : t.visibility === 'all' ? 'All clients' : 'Assigned clients only'} · Updated {formatDateOnly(t.updatedAt)}
                 </p>
               </div>
             </Card>
@@ -179,7 +183,39 @@ export default function TemplatesPage() {
       )}
 
       <NewTemplateModal open={newOpen} onClose={() => setNewOpen(false)} />
+      {accessFor && <AccessModal templateId={accessFor.id} title={accessFor.title} onClose={() => setAccessFor(null)} onSaved={load} />}
     </>
+  );
+}
+
+function FileDrop({ label, hint, file, onPick, id }: { label: string; hint: string; file: File | null; onPick: (f: File | undefined) => void; id: string }) {
+  const [drag, setDrag] = useState(false);
+  return (
+    <Field label={label} hint={hint}>
+      <label
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDrag(true);
+        }}
+        onDragLeave={() => setDrag(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDrag(false);
+          onPick(e.dataTransfer.files[0]);
+        }}
+        className={`flex cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed px-4 py-6 text-center text-sm ${drag ? 'border-brand-500 bg-brand-50' : 'border-slate-300 hover:border-slate-400'}`}
+      >
+        <FileUp className="h-6 w-6 text-slate-400" />
+        {file ? (
+          <span className="font-medium text-slate-800">{file.name}</span>
+        ) : (
+          <span className="text-slate-600">
+            <span className="font-medium text-brand-700">Choose a file</span> or drag it here
+          </span>
+        )}
+        <input id={id} type="file" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg" className="sr-only" onChange={(e) => onPick(e.target.files?.[0])} />
+      </label>
+    </Field>
   );
 }
 
@@ -187,33 +223,38 @@ export function NewTemplateModal({ open, onClose }: { open: boolean; onClose: ()
   const { navigate } = useRouter();
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
-  const [file, setFile] = useState<File | null>(null);
+  const [reference, setReference] = useState<File | null>(null);
+  const [blank, setBlank] = useState<File | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [drag, setDrag] = useState(false);
 
-  const pick = (f: File | undefined) => {
+  const check = (f: File | undefined, set: (f: File) => void) => {
     if (!f) return;
     setError(null);
     if (!/\.(pdf|png|jpe?g)$/i.test(f.name)) return setError('Upload a PDF, PNG or JPG file.');
-    setFile(f);
-    if (!title) setTitle(f.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' '));
+    set(f);
+    if (!title) setTitle(f.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').replace(/\b(blank|complete|reference|sample)\b/gi, '').trim());
   };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim()) return setError('Enter a template name.');
+    if (!blank) return setError('Upload the blank certificate design (Upload B).');
+    if (!reference) return setError('Upload the complete reference certificate (Upload A).');
     setError(null);
     try {
       let draft = emptyLayout();
-      if (file) draft = { ...draft, ...(await processArtwork(file, setStatus)) };
+      draft = { ...draft, ...(await processArtwork(blank, setStatus)) };
+      draft = { ...draft, ...(await processReference(reference, setStatus)) };
       setStatus('Creating template…');
       const t = await api.post<TemplateDetail>('/api/admin/templates', { title, description, draft });
       onClose();
       setTitle('');
       setDescription('');
-      setFile(null);
-      navigate(`/admin/templates/${t.id}`);
+      setBlank(null);
+      setReference(null);
+      const align = checkReferenceAlignment(t.draft);
+      navigate(`/admin/templates/${t.id}${align.problems.length ? '?align=1' : ''}`);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -226,7 +267,8 @@ export function NewTemplateModal({ open, onClose }: { open: boolean; onClose: ()
       open={open}
       onClose={() => !status && onClose()}
       title="New template"
-      description="Upload the blank certificate design. Do not include any names or wording that changes per event."
+      description="Upload two versions of the same design: the finished example and the blank background."
+      size="lg"
       footer={
         <>
           <Button onClick={onClose} disabled={!!status}>
@@ -245,31 +287,23 @@ export function NewTemplateModal({ open, onClose }: { open: boolean; onClose: ()
         <Field label="Description" htmlFor="tpl-desc" optional>
           <Textarea id="tpl-desc" rows={2} value={description} onChange={(e) => setDescription(e.target.value)} maxLength={500} placeholder="Shown to clients when they choose a template" />
         </Field>
-        <Field label="Certificate artwork" hint="PDF, PNG or JPG, up to 25 MB. You can also add it later in the designer.">
-          <label
-            onDragOver={(e) => {
-              e.preventDefault();
-              setDrag(true);
-            }}
-            onDragLeave={() => setDrag(false)}
-            onDrop={(e) => {
-              e.preventDefault();
-              setDrag(false);
-              pick(e.dataTransfer.files[0]);
-            }}
-            className={`flex cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed px-4 py-8 text-center text-sm ${drag ? 'border-brand-500 bg-brand-50' : 'border-slate-300 hover:border-slate-400'}`}
-          >
-            <FileUp className="h-6 w-6 text-slate-400" />
-            {file ? (
-              <span className="font-medium text-slate-800">{file.name}</span>
-            ) : (
-              <span className="text-slate-600">
-                <span className="font-medium text-brand-700">Choose a file</span> or drag it here
-              </span>
-            )}
-            <input type="file" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg" className="sr-only" onChange={(e) => pick(e.target.files?.[0])} />
-          </label>
-        </Field>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <FileDrop
+            id="tpl-reference"
+            label="Upload A — Complete reference certificate"
+            hint="The finished example with sample name, wording, photo, signatures and QR code. Used only as a guide; never printed."
+            file={reference}
+            onPick={(f) => check(f, setReference)}
+          />
+          <FileDrop
+            id="tpl-blank"
+            label="Upload B — Blank certificate design"
+            hint="The same design without any names, wording, photos, signatures or QR codes. This is the background of every certificate."
+            file={blank}
+            onPick={(f) => check(f, setBlank)}
+          />
+        </div>
+        <p className="text-xs text-slate-500">PDF, PNG or JPG, up to 25 MB each. Both files should have the same page size and orientation.</p>
         {status && <p className="text-sm text-slate-600">{status}</p>}
         {error && <Alert tone="error">{error}</Alert>}
       </form>

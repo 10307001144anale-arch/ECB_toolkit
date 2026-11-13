@@ -6,8 +6,12 @@ import { useToast } from '../../../context/ToastContext';
 import type { ContentPreset, QrBox, TemplateBox, TextBox } from '../../../../shared/types';
 import { SYSTEM_PLACEHOLDERS, columnToPlaceholder, findMalformedPlaceholders, findPlaceholders, normKey } from '../../../../shared/placeholders';
 import { draftCertificate, fitContentToLayout } from '../../../engine/batch';
+import { realisticCertificate } from '../../../engine/samples';
+import type { ResolvedCertificate } from '../../../engine/renderer';
 import { verifyBaseUrl } from '../../../lib/api';
 import { CertificatePreview } from './CertificatePreview';
+import { RichTextEditor, type RichEditorHandle } from '../../../components/RichTextEditor';
+import { hasFormatting, plainToRich, richToPlain, type FormattingPermissions, type RichDoc } from '../../../../shared/rich';
 import type { StepProps } from './state';
 
 const COMMON_FIELDS = [
@@ -43,13 +47,29 @@ export function StepContent({ w, d, set }: StepProps) {
       .catch(() => {});
   }, [w.template]);
 
-  const cert = useMemo(
-    () => draftCertificate(layout, w.content, verifyBaseUrl(null), (k) => renderer.fixedSignature(k), w.images),
+  // Realistic preview: the wording with example participant details, an example photo and signature.
+  const [cert, setCert] = useState<ResolvedCertificate | null>(null);
+  const [showFields, setShowFields] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    const fixed = (k: string) => renderer.fixedSignature(k);
+    if (showFields) setCert(draftCertificate(layout, w.content, verifyBaseUrl(null), fixed, w.images));
+    else realisticCertificate(layout, w.content, verifyBaseUrl(null), fixed, w.images).then((c) => alive && setCert(c));
+    return () => {
+      alive = false;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [layout, w.content, renderer, w.images, w.imagesVersion]
-  );
+  }, [layout, w.content, renderer, w.images, w.imagesVersion, showFields]);
 
   const setText = (key: string, value: string) => set((s) => ({ content: { ...s.content, texts: { ...s.content.texts, [key]: value } } }));
+  /** Formatted wording: keeps plain text (for placeholders/validation) and the formatting in sync. */
+  const setRich = (key: string, doc: RichDoc) =>
+    set((s) => {
+      const rich = { ...(s.content.rich || {}) };
+      if (hasFormatting(doc)) rich[key] = doc;
+      else delete rich[key];
+      return { content: { ...s.content, texts: { ...s.content.texts, [key]: richToPlain(doc) }, rich } };
+    });
   const setQr = (key: string, patch: Partial<{ mode: 'custom' | 'verification'; value: string }>) =>
     set((s) => ({ content: { ...s.content, qr: { ...s.content.qr, [key]: { ...s.content.qr[key], ...patch } } } }));
 
@@ -113,7 +133,9 @@ export function StepContent({ w, d, set }: StepProps) {
             key={b.id}
             box={b}
             value={w.content.texts[b.key] || ''}
+            rich={w.content.rich?.[b.key] || null}
             onChange={(v) => setText(b.key, v)}
+            onRichChange={(doc) => setRich(b.key, doc)}
             onFocus={() => setActive(b.key)}
             active={active === b.key}
             headers={headers}
@@ -179,7 +201,17 @@ export function StepContent({ w, d, set }: StepProps) {
         <div className="lg:sticky lg:top-6">
           <p className="mb-2 text-sm font-medium text-slate-700">Live preview</p>
           <CertificatePreview renderer={renderer} cert={cert} highlightKey={active} />
-          <p className="mt-2 text-xs text-slate-500">Fields such as {'{{name}}'} are shown as written. They are replaced with each participant's details when you generate.</p>
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
+            <span>
+              {showFields
+                ? 'Fields such as {{name}} are shown as written.'
+                : 'Shown with example details (e.g. Karma Dorji) and an example photo and signature. Each participant’s details are used when you generate.'}
+            </span>
+            <label className="flex items-center gap-1.5">
+              <input type="checkbox" className="h-3.5 w-3.5 rounded border-slate-300" checked={showFields} onChange={(e) => setShowFields(e.target.checked)} />
+              Show field names
+            </label>
+          </div>
         </div>
       </div>
 
@@ -200,7 +232,9 @@ export function StepContent({ w, d, set }: StepProps) {
 function TextBoxEditor({
   box,
   value,
+  rich,
   onChange,
+  onRichChange,
   onFocus,
   active,
   headers,
@@ -210,7 +244,9 @@ function TextBoxEditor({
 }: {
   box: TextBox;
   value: string;
+  rich: RichDoc | null;
   onChange: (v: string) => void;
+  onRichChange: (doc: RichDoc) => void;
   onFocus: () => void;
   active: boolean;
   headers: string[];
@@ -232,7 +268,7 @@ function TextBoxEditor({
         <p className="mb-2 flex flex-wrap items-center gap-x-2 text-xs text-slate-500">
           {value === box.defaultText ? <span>Suggested wording from your administrator — keep it or edit it.</span> : <span>You changed the suggested wording.</span>}
           {value !== box.defaultText && (
-            <button type="button" className="font-medium text-brand-700 hover:underline" onClick={() => onChange(box.defaultText)}>
+            <button type="button" className="font-medium text-brand-700 hover:underline" onClick={() => onRichChange(box.defaultRich || plainToRich(box.defaultText))}>
               Use suggested wording
             </button>
           )}
@@ -250,6 +286,11 @@ function TextBoxEditor({
         registered={registered}
         label={box.label}
         maxChars={box.maxChars}
+        rich={
+          Object.values(box.formatting || {}).some(Boolean)
+            ? { value: rich || plainToRich(value), onChange: onRichChange, perms: box.formatting, baseStyle: { color: box.color, fontWeight: Number(box.fontWeight), fontStyle: box.italic ? 'italic' : undefined } }
+            : undefined
+        }
       />
       {issues.map((i, n) => (
         <p key={n} className={cx('mt-2 flex items-start gap-1 text-xs', i.level === 'error' ? 'text-red-600' : 'text-amber-700')}>
@@ -274,8 +315,10 @@ export function PlaceholderTextarea({
   registered,
   label,
   maxChars,
+  rich,
 }: {
   id?: string;
+  rich?: { value: RichDoc; onChange: (doc: RichDoc) => void; perms: FormattingPermissions; baseStyle?: React.CSSProperties };
   value: string;
   onChange: (v: string) => void;
   rows: number;
@@ -288,6 +331,7 @@ export function PlaceholderTextarea({
   maxChars?: number | null;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
+  const editor = useRef<RichEditorHandle>(null);
   const caret = useRef<number>(value.length);
   const [menu, setMenu] = useState(false);
   const [custom, setCustom] = useState('');
@@ -302,6 +346,12 @@ export function PlaceholderTextarea({
 
   const insert = (name: string) => {
     const token = `{{${name}}}`;
+    if (rich) {
+      editor.current?.insertText(token);
+      setMenu(false);
+      setCustom('');
+      return;
+    }
     const pos = Math.min(caret.current ?? value.length, value.length);
     const before = value.slice(0, pos);
     const after = value.slice(pos);
@@ -326,6 +376,20 @@ export function PlaceholderTextarea({
   return (
     <div>
       <div className="relative">
+        {rich ? (
+          <RichTextEditor
+            ref={editor}
+            id={id}
+            value={rich.value}
+            onChange={rich.onChange}
+            perms={rich.perms}
+            singleLine={singleLine}
+            placeholder={placeholder}
+            label={label}
+            minRows={rows}
+            baseStyle={rich.baseStyle}
+          />
+        ) : (
         <Textarea
           id={id}
           ref={ref}
@@ -344,6 +408,7 @@ export function PlaceholderTextarea({
           className="resize-y pr-2"
           aria-label={label}
         />
+        )}
       </div>
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
         <div className="relative" ref={menuRef}>

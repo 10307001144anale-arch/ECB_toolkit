@@ -11,7 +11,8 @@
     "lint": "tsc --noEmit",
     "test:api": "node tests/api-smoke.ts http://localhost:3999",
     "clean": "rm -rf dist",
-    "dev:no-browser": "tsx server.ts"
+    "dev:no-browser": "tsx server.ts",
+    "migrate:supabase": "tsx server/scripts/migrate-to-supabase.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
@@ -31,6 +32,7 @@
     "papaparse": "^5.7.0",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^6.5.438",
+    "pg": "^8.13.1",
     "qrcode": "^1.5.4",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",

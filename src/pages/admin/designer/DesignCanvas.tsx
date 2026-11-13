@@ -4,7 +4,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ImageIcon, PenLine, QrCode, Type } from 'lucide-react';
 import type { BoxType, SignatureBox, TemplateBox, TemplateLayout, TextBox } from '../../../../shared/types';
-import { signatureSplit } from '../../../../shared/layout';
+import { signatureOrder, signatureSplit } from '../../../../shared/layout';
 import { applyTransform, TEXT_PADDING } from '../../../engine/textLayout';
 import { fileUrl } from '../../../lib/api';
 import { cx } from '../../../components/ui';
@@ -58,6 +58,8 @@ interface Props {
   onCreate: (type: BoxType, rect: Rect) => void;
   onRectChange: (id: string, rect: Rect, commit: boolean) => void;
   previewUrl: string | null;
+  /** blank = design used for PDFs; reference = finished example; overlay = example over the blank design. */
+  view?: 'blank' | 'reference' | 'overlay';
 }
 
 type Drag =
@@ -65,7 +67,7 @@ type Drag =
   | { kind: 'move'; id: string; startX: number; startY: number; orig: Rect; moved: boolean }
   | { kind: 'resize'; id: string; handle: Handle; startX: number; startY: number; orig: Rect };
 
-export function DesignCanvas({ layout, page, zoom, onFitScale, tool, selectedId, onSelect, onCreate, onRectChange, previewUrl }: Props) {
+export function DesignCanvas({ layout, page, zoom, onFitScale, tool, selectedId, onSelect, onCreate, onRectChange, previewUrl, view = 'blank' }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const paperRef = useRef<HTMLDivElement>(null);
   const [fitScale, setFitScale] = useState(1);
@@ -189,7 +191,11 @@ export function DesignCanvas({ layout, page, zoom, onFitScale, tool, selectedId,
 
   if (!pg) return null;
   const boxes = layout.boxes.filter((b) => b.page === page);
-  const img = previewUrl || fileUrl(pg.previewFileId);
+  const refPg = layout.referencePages?.[page];
+  const refImg = refPg?.previewFileId ? fileUrl(refPg.previewFileId) : null;
+  const img = view === 'reference' && refImg && !previewUrl ? refImg : previewUrl || fileUrl(pg.previewFileId);
+  const ov = layout.referenceOverlay;
+  const sigNumber = new Map(signatureOrder(layout.boxes).map((b, i) => [b.id, i + 1]));
 
   return (
     <div ref={scrollRef} className="checkerboard relative flex-1 overflow-auto">
@@ -204,6 +210,16 @@ export function DesignCanvas({ layout, page, zoom, onFitScale, tool, selectedId,
           onPointerCancel={onPointerUp}
         >
           {img && <img src={img} alt="Certificate artwork" className="pointer-events-none absolute inset-0 h-full w-full" draggable={false} />}
+          {view === 'overlay' && refImg && (
+            // Locked, non-editable reference layer.
+            <img
+              src={refImg}
+              alt="Reference certificate overlay"
+              className="pointer-events-none absolute left-0 top-0 h-full w-full select-none"
+              style={{ opacity: ov?.opacity ?? 0.5, transformOrigin: '0 0', transform: `translate(${ov?.offsetX ?? 0}%, ${ov?.offsetY ?? 0}%) scale(${ov?.scale ?? 1})` }}
+              draggable={false}
+            />
+          )}
           {boxes.map((b) => {
             const st = BOX_STYLE[b.type];
             const selected = b.id === selectedId;
@@ -227,6 +243,7 @@ export function DesignCanvas({ layout, page, zoom, onFitScale, tool, selectedId,
               >
                 <span className={cx('pointer-events-none absolute -top-5 left-[-2px] flex max-w-[200%] items-center gap-1 truncate rounded-t px-1.5 py-0.5 text-[10px] font-medium text-white', st.chip, !selected && 'opacity-80')}>
                   {st.icon}
+                  {b.type === 'signature' && <span className="rounded bg-white/30 px-1">{sigNumber.get(b.id)}</span>}
                   {b.label}
                   {b.required && b.type === 'text' ? ' *' : ''}
                 </span>
@@ -330,7 +347,27 @@ function CanvasText({ box, scale }: { box: TextBox; scale: number }) {
           width: '100%',
         }}
       >
-        {text}
+        {box.defaultRich && !placeholder
+          ? box.defaultRich.paragraphs.map((p, pi) => (
+              <div key={pi} style={{ textAlign: p.align || box.align, minHeight: '1em' }}>
+                {p.runs.map((r, ri) => (
+                  <span
+                    key={ri}
+                    style={{
+                      fontWeight: r.b === undefined ? undefined : r.b ? 700 : 400,
+                      fontStyle: r.i === undefined ? undefined : r.i ? 'italic' : 'normal',
+                      textDecoration: r.u ? 'underline' : undefined,
+                      color: r.color,
+                      backgroundColor: r.bg,
+                      fontSize: r.size && r.size !== 1 ? `${r.size}em` : undefined,
+                    }}
+                  >
+                    {applyTransform(r.text, box.transform)}
+                  </span>
+                ))}
+              </div>
+            ))
+          : text}
       </div>
     </div>
   );

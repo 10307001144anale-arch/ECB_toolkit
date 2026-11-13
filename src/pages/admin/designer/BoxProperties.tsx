@@ -14,6 +14,8 @@ import {
 } from 'lucide-react';
 import type { CustomFontRef, PhotoBox, QrBox, SignatureBox, TemplateBox, TemplateLayout, TextBox } from '../../../../shared/types';
 import { defaultCaption, FONT_FAMILIES, makeKey } from '../../../../shared/layout';
+import { ALL_FORMATTING, hasFormatting, plainToRich, richToPlain, type FormattingPermissions } from '../../../../shared/rich';
+import { RichTextEditor } from '../../../components/RichTextEditor';
 import { api, fileUrl } from '../../../lib/api';
 import { Button, Field, IconButton, Input, Segmented, Select, Textarea, Toggle, cx } from '../../../components/ui';
 import { BOX_STYLE } from './DesignCanvas';
@@ -151,21 +153,28 @@ export function BoxProperties({ box, layout, published, onChange, onDelete, onDu
         </Field>
         <Toggle checked={box.required} onChange={(v) => set({ required: v })} label="Required" description={box.type === 'text' ? 'Clients must fill this box.' : 'Every certificate must include this.'} />
         {box.type === 'text' && (
+          <FormattingPerms box={box} onChange={(formatting) => onChange({ formatting } as Partial<TemplateBox>, true)} />
+        )}
+        {box.type === 'text' && (
           <Field
             label="Default wording"
             htmlFor="bp-default"
             optional
             hint={'Shown to clients as a starting point; they can keep it or rewrite it for their batch. You can use fields like {{name}}. Leave empty if the client should write it.'}
           >
-            <Textarea
-              id="bp-default"
-              rows={3}
-              value={box.defaultText}
-              maxLength={5000}
-              placeholder="e.g. This certificate is proudly presented to"
-              onChange={(e) => onChange({ defaultText: e.target.value } as Partial<TemplateBox>, false)}
-              onBlur={() => onChange({}, true)}
-            />
+            <div onBlur={() => onChange({}, true)}>
+              <RichTextEditor
+                id="bp-default"
+                value={box.defaultRich || plainToRich(box.defaultText)}
+                perms={ALL_FORMATTING}
+                singleLine={!box.multiline}
+                minRows={3}
+                label="Default wording"
+                placeholder="e.g. This certificate is proudly presented to"
+                baseStyle={{ color: box.color, fontWeight: Number(box.fontWeight), fontStyle: box.italic ? 'italic' : undefined }}
+                onChange={(doc) => onChange({ defaultText: richToPlain(doc).slice(0, 5000), defaultRich: hasFormatting(doc) ? doc : null } as Partial<TemplateBox>, false)}
+              />
+            </div>
           </Field>
         )}
       </Section>
@@ -474,6 +483,32 @@ function SignatureSections({ box, set }: { box: SignatureBox; set: (p: Partial<S
         </Field>
       )}
     </Section>
+  );
+}
+
+const PERM_LABELS: [keyof FormattingPermissions, string][] = [
+  ['bold', 'Bold'],
+  ['italic', 'Italic'],
+  ['underline', 'Underline'],
+  ['color', 'Text colour'],
+  ['highlight', 'Highlight'],
+  ['size', 'Text size'],
+  ['align', 'Alignment'],
+];
+
+function FormattingPerms({ box, onChange }: { box: TextBox; onChange: (p: FormattingPermissions) => void }) {
+  const perms = box.formatting || ALL_FORMATTING;
+  return (
+    <Field label="Formatting clients may use" hint="Clients can format selected words (e.g. bold names). Untick anything that should stay as designed.">
+      <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-sm">
+        {PERM_LABELS.map(([k, label]) => (
+          <label key={k} className="flex items-center gap-2">
+            <input type="checkbox" className="h-4 w-4 rounded border-slate-300" checked={perms[k]} onChange={(e) => onChange({ ...perms, [k]: e.target.checked })} />
+            {label}
+          </label>
+        ))}
+      </div>
+    </Field>
   );
 }
 

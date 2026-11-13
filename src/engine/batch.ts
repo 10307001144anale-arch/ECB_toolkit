@@ -13,6 +13,7 @@ import {
   resolvePlaceholders,
   SYSTEM_PLACEHOLDERS,
 } from '../../shared/placeholders';
+import { richToPlain, substituteRich } from '../../shared/rich';
 import type {
   ContentConfig,
   PhotoCrop,
@@ -32,7 +33,10 @@ export const PREVIEW_CERT_ID = 'CG-PREV-IEW0-0000';
 export function emptyContent(layout: TemplateLayout): ContentConfig {
   const c: ContentConfig = { texts: {}, qr: {}, signatures: {}, photos: {} };
   for (const b of layout.boxes) {
-    if (b.type === 'text') c.texts[b.key] = b.defaultText || '';
+    if (b.type === 'text') {
+      c.texts[b.key] = b.defaultText || '';
+      if (b.defaultRich) (c.rich ||= {})[b.key] = b.defaultRich;
+    }
     if (b.type === 'qr') c.qr[b.key] = { mode: b.contentMode === 'client' ? 'custom' : 'verification', value: '' };
     if (b.type === 'photo') c.photos[b.key] = { column: '' };
     if (b.type === 'signature') {
@@ -48,7 +52,12 @@ export function fitContentToLayout(layout: TemplateLayout, content: Partial<Cont
   const base = emptyContent(layout);
   if (!content) return base;
   for (const b of layout.boxes) {
-    if (b.type === 'text' && typeof content.texts?.[b.key] === 'string') base.texts[b.key] = content.texts[b.key];
+    if (b.type === 'text' && typeof content.texts?.[b.key] === 'string') {
+      base.texts[b.key] = content.texts[b.key];
+      const r = content.rich?.[b.key];
+      if (base.rich) delete base.rich[b.key];
+      if (r && richToPlain(r) === content.texts[b.key]) (base.rich ||= {})[b.key] = r;
+    }
     if (b.type === 'qr' && content.qr?.[b.key]) {
       const q = content.qr[b.key];
       const mode = b.contentMode === 'client' ? 'custom' : b.contentMode === 'verification' ? 'verification' : q.mode;
@@ -402,6 +411,11 @@ export function resolveCertificate(
       const text = ctx.content.texts[b.key] || '';
       const r = resolvePlaceholders(text, values, ctx.registered);
       cert.texts[b.key] = r.missing.length && !b.required ? '' : r.text;
+      const rich = ctx.content.rich?.[b.key];
+      if (rich && cert.texts[b.key]) {
+        // Replace placeholders inside the formatted wording; each value keeps its placeholder's formatting.
+        (cert.rich ||= {})[b.key] = substituteRich(rich, (tok) => resolvePlaceholders(tok, values, ctx.registered).text, ctx.registered);
+      }
     } else if (b.type === 'qr') {
       const q = ctx.content.qr[b.key];
       if (!q) cert.qr[b.key] = null;
@@ -441,8 +455,11 @@ export function signerFor(box: SignatureBox, sc: SignatureContent | undefined): 
 export function draftCertificate(layout: TemplateLayout, content: ContentConfig, verifyBaseUrl: string, fixedSignature: (k: string) => Blob | null, images?: ImageLibrary): ResolvedCertificate {
   const cert: ResolvedCertificate = { texts: {}, qr: {}, images: {} };
   for (const b of layout.boxes) {
-    if (b.type === 'text') cert.texts[b.key] = content.texts[b.key] || '';
-    else if (b.type === 'qr') {
+    if (b.type === 'text') {
+      cert.texts[b.key] = content.texts[b.key] || '';
+      const rich = content.rich?.[b.key];
+      if (rich) (cert.rich ||= {})[b.key] = rich;
+    } else if (b.type === 'qr') {
       const q = content.qr[b.key];
       cert.qr[b.key] = q ? (q.mode === 'verification' ? `${verifyBaseUrl}/verify/${PREVIEW_CERT_ID}` : q.value || null) : null;
     } else if (b.type === 'signature') {

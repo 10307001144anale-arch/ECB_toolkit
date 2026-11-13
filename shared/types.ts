@@ -1,3 +1,6 @@
+import type { FormattingPermissions, RichDoc } from './rich.ts';
+export type { FormattingPermissions, RichDoc, RichRun, RichParagraph } from './rich.ts';
+
 // Shared domain types used by both the Express backend and the React frontend.
 // Keep this file free of runtime imports so it can be loaded by Node's type stripping.
 
@@ -44,6 +47,10 @@ export interface TextBox extends BoxBase {
   type: 'text';
   /** Optional wording set by the admin. Clients start from it and may keep or change it for their batch. */
   defaultText: string;
+  /** Formatting of the default wording (bold/italic/…); null = plain. Its text equals defaultText. */
+  defaultRich: RichDoc | null;
+  /** Formatting clients may apply in this box. */
+  formatting: FormattingPermissions;
   fontFamily: string;
   fontWeight: '400' | '700';
   italic: boolean;
@@ -132,11 +139,28 @@ export interface CustomFontRef {
 }
 
 export interface TemplateLayout {
+  /** Blank design: the only background used in generated PDFs. */
   artworkFileId: string | null;
   artworkMime: 'application/pdf' | 'image/png' | 'image/jpeg' | null;
   pages: LayoutPage[];
   boxes: TemplateBox[];
   fonts: CustomFontRef[];
+  /** Complete reference certificate: a locked visual guide for the administrator only. Never printed. */
+  referenceFileId: string | null;
+  referenceMime: 'application/pdf' | 'image/png' | 'image/jpeg' | null;
+  referencePages: LayoutPage[];
+  referenceOverlay: ReferenceOverlay;
+}
+
+/** How the reference certificate is laid over the blank design (calibration). */
+export interface ReferenceOverlay {
+  opacity: number; // 0–1
+  /** Shift in % of the page size, and scale factor, to line the two files up. */
+  offsetX: number;
+  offsetY: number;
+  scale: number;
+  /** The administrator confirmed the files line up although their sizes differ. */
+  alignmentConfirmed: boolean;
 }
 
 export type TemplateStatus = 'draft' | 'published' | 'archived';
@@ -221,7 +245,9 @@ export interface PhotoCrop {
 }
 
 export interface ContentConfig {
-  texts: Record<string, string>; // box key -> wording with placeholders
+  texts: Record<string, string>; // box key -> wording with placeholders (plain text)
+  /** Formatting for a box's wording; its text always equals texts[key]. Absent = plain. */
+  rich?: Record<string, RichDoc>;
   qr: Record<string, QrContent>;
   signatures: Record<string, SignatureContent>;
   photos: Record<string, PhotoContent>;

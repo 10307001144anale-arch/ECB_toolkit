@@ -1,11 +1,11 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { DATA_DIR } from './db.ts';
+const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(process.cwd(), 'data'));
 
 /**
  * Server secret used to encrypt stored OAuth tokens. Set APP_SECRET in
- * production; in development a random key is created in data/secret.key.
+ * production; in development a random key is created in data/secret.key (local only).
  */
 function loadSecret(): Buffer {
   const env = process.env.APP_SECRET;
@@ -13,6 +13,7 @@ function loadSecret(): Buffer {
   if (process.env.NODE_ENV === 'production') {
     throw new Error('APP_SECRET must be set (at least 32 characters) in production.');
   }
+  fs.mkdirSync(DATA_DIR, { recursive: true });
   const file = path.join(DATA_DIR, 'secret.key');
   if (!fs.existsSync(file)) fs.writeFileSync(file, crypto.randomBytes(32).toString('hex'), { mode: 0o600 });
   return crypto.createHash('sha256').update(fs.readFileSync(file, 'utf8').trim()).digest();

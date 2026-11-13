@@ -10,7 +10,7 @@ import { Alert, Badge, Button, Card, Field, Input, Segmented, Select, Spinner, c
 import { useToast } from '../../../context/ToastContext';
 import { ImageLibrary, MAX_IMAGE_BYTES, prepareImage, readImageFiles, trimSignature } from '../../../engine/images';
 import { findPhoto, signerFor } from '../../../engine/batch';
-import { signatureSplit, type SignatureSplit } from '../../../../shared/layout';
+import { signatureOrder, signatureSplit, type SignatureSplit } from '../../../../shared/layout';
 import { fileUrl } from '../../../lib/api';
 import type { PhotoBox, SignatureBox, SignatureContent } from '../../../../shared/types';
 import { SignaturePad } from './SignaturePad';
@@ -24,7 +24,8 @@ const DEFAULT_SIG: SignatureContent = { mode: 'none', column: '', fileName: '', 
 export function ImagesPanel({ w, d, set }: StepProps) {
   const layout = w.template!.layout;
   const photoBoxes = layout.boxes.filter((b): b is PhotoBox => b.type === 'photo');
-  const sigBoxes = layout.boxes.filter((b): b is SignatureBox => b.type === 'signature');
+  // Always left → right: Signature 1, 2, 3 (same order as the designer and the PDF).
+  const sigBoxes = signatureOrder(layout.boxes) as SignatureBox[];
   if (!photoBoxes.length && !sigBoxes.length) return null;
   return (
     <div className="space-y-5">
@@ -33,8 +34,8 @@ export function ImagesPanel({ w, d, set }: StepProps) {
         <p className="mt-1 text-sm text-slate-600">Images stay in your browser and are never uploaded to the server.</p>
       </div>
       {photoBoxes.length > 0 && <PhotosCard w={w} d={d} set={set} boxes={photoBoxes} />}
-      {sigBoxes.map((b) => (
-        <SignatureCard key={b.id} w={w} set={set} box={b} />
+      {sigBoxes.map((b, i) => (
+        <SignatureCard key={b.id} w={w} set={set} box={b} number={sigBoxes.length > 1 ? i + 1 : null} total={sigBoxes.length} />
       ))}
     </div>
   );
@@ -198,7 +199,7 @@ function PhotosCard({ w, d, set, boxes }: Pick<StepProps, 'w' | 'd' | 'set'> & {
 
 // ---------------------------------------------------------------- signatures
 
-function SignatureCard({ w, set, box }: Pick<StepProps, 'w' | 'set'> & { box: SignatureBox }) {
+function SignatureCard({ w, set, box, number, total }: Pick<StepProps, 'w' | 'set'> & { box: SignatureBox; number: number | null; total: number }) {
   const { showToast } = useToast();
   const headers = w.data?.headers || [];
   const s: SignatureContent = { ...DEFAULT_SIG, ...(w.content.signatures[box.key] || {}) };
@@ -239,7 +240,11 @@ function SignatureCard({ w, set, box }: Pick<StepProps, 'w' | 'set'> & { box: Si
     <Card className="p-5">
       <div className="mb-3 flex items-center gap-2">
         <PenLine className="h-5 w-5 text-amber-600" />
-        <h3 className="font-medium">{box.label}</h3>
+        <h3 className="font-medium">
+          {number !== null && !/^Signature \d+$/.test(box.label) ? `Signature ${number} · ` : ''}
+          {box.label}
+          {number !== null && <span className="ml-2 text-xs font-normal text-slate-500">{number === 1 ? 'leftmost' : number === total ? 'rightmost' : 'middle'}</span>}
+        </h3>
         {box.required ? <Badge tone="blue">Required</Badge> : <span className="text-xs text-slate-400">Optional</span>}
       </div>
       <div className="space-y-2 text-sm">

@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
-import { db, GUEST_ID, newId, now } from './db.ts';
+import { db, newId, now } from './db.ts';
 import type { PublicUser, Role } from '../shared/types.ts';
 
 const SESSION_COOKIE = 'cg_session';
@@ -71,13 +71,17 @@ export function toPublicUser(row: UserRow): PublicUser {
   };
 }
 
-export function getUserById(id: string): UserRow | undefined {
-  return db.prepare('SELECT * FROM users WHERE id = ?').get(id) as UserRow | undefined;
+export async function getUserById(id: string): Promise<UserRow | undefined> {
+  return db.one<UserRow>('SELECT * FROM users WHERE id = ?', [id]);
 }
 
-export function authenticate(email: string, password: string): UserRow | null {
-  const row = db.prepare('SELECT * FROM users WHERE email = ?').get(String(email || '').trim()) as UserRow | undefined;
-  if (!row || row.id === GUEST_ID) {
+export async function getUserByEmail(email: string): Promise<UserRow | undefined> {
+  return db.one<UserRow>('SELECT * FROM users WHERE lower(email) = lower(?)', [String(email || '').trim()]);
+}
+
+export async function authenticate(email: string, password: string): Promise<UserRow | null> {
+  const row = await getUserByEmail(email);
+  if (!row || row.password_hash === 'disabled') {
     verifyPassword(password, DUMMY_HASH);
     return null;
   }
@@ -86,12 +90,20 @@ export function authenticate(email: string, password: string): UserRow | null {
   return row;
 }
 
-export function createUser(input: { email: string; name: string; password: string; role: Role; organisation?: string | null }): UserRow {
+export async function createUser(input: {
+  email: string;
+  name: string;
+  password: string;
+  role: Role;
+  organisation?: string | null;
+  createdBy?: string | null;
+}): Promise<UserRow> {
   const id = newId('usr_');
-  db.prepare(
-    'INSERT INTO users (id, email, name, password_hash, role, organisation, active, created_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?)'
-  ).run(id, input.email.trim(), input.name.trim(), hashPassword(input.password), input.role, input.organisation?.trim() || null, now());
-  return getUserById(id)!;
+  await db.run(
+    'INSERT INTO users (id, email, name, password_hash, role, organisation, active, created_at, updated_at, created_by) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)',
+    [id, input.email.trim().toLowerCase(), input.name.trim(), hashPassword(input.password), input.role, input.organisation?.trim() || null, now(), now(), input.createdBy || null]
+  );
+  return (await getUserById(id))!;
 }
 
 // ---------------------------------------------------------------- sessions
@@ -104,16 +116,11 @@ function isSecureRequest(req: Request): boolean {
   return req.secure || req.headers['x-forwarded-proto'] === 'https' || process.env.COOKIE_SECURE === 'true';
 }
 
-export function startSession(req: Request, res: Response, userId: string) {
+export async function startSession(req: Request, res: Response, userId: string) {
   const token = crypto.randomBytes(32).toString('base64url');
   const t = now();
-  db.prepare('INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)').run(
-    sha256(token),
-    userId,
-    t,
-    t + SESSION_TTL_MS
-  );
-  db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(t, userId);
+  await db.run('INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)', [sha256(token), userId, t, t + SESSION_TTL_MS]);
+  await db.run('UPDATE users SET last_login_at = ? WHERE id = ?', [t, userId]);
   res.cookie(SESSION_COOKIE, token, {
     httpOnly: true,
     sameSite: 'lax',
@@ -123,14 +130,14 @@ export function startSession(req: Request, res: Response, userId: string) {
   });
 }
 
-export function endSession(req: Request, res: Response) {
+export async function endSession(req: Request, res: Response) {
   const token = readCookie(req, SESSION_COOKIE);
-  if (token) db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(sha256(token));
+  if (token) await db.run('DELETE FROM sessions WHERE token_hash = ?', [sha256(token)]);
   res.clearCookie(SESSION_COOKIE, { path: '/' });
 }
 
-export function endAllSessionsForUser(userId: string) {
-  db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId);
+export async function endAllSessionsForUser(userId: string) {
+  await db.run('DELETE FROM sessions WHERE user_id = ?', [userId]);
 }
 
 function readCookie(req: Request, name: string): string | null {
@@ -147,58 +154,29 @@ function readCookie(req: Request, name: string): string | null {
 export interface AuthedRequest extends Request {
   user?: PublicUser;
   sessionTokenHash?: string;
-  /** Set when the request is served as the public (no sign-in) client. */
-  guest?: boolean;
-  /** Anonymous per-browser id, used to keep public visitors' presets and history apart. */
-  deviceId?: string;
-}
-
-const DEVICE_COOKIE = 'cg_device';
-
-/**
- * Client-portal API requests without a client session are served as the
- * built-in public client (if the administrator has not deactivated it).
- * Each browser gets an anonymous device id so visitors only see their own
- * presets and batches.
- */
-export function guestMiddleware(req: AuthedRequest, res: Response, next: NextFunction) {
-  if (req.user?.role === 'client') return next();
-  const guest = getUserById(GUEST_ID);
-  if (!guest || !guest.active) {
-    if (!req.user) return res.status(401).json({ error: 'Public access is turned off. Please sign in.' });
-    return next();
-  }
-  let device = readCookie(req, DEVICE_COOKIE);
-  if (!device || !/^[A-Za-z0-9_-]{20,64}$/.test(device)) {
-    device = crypto.randomBytes(24).toString('base64url');
-    res.cookie(DEVICE_COOKIE, device, { httpOnly: true, sameSite: 'lax', secure: isSecureRequest(req), maxAge: 365 * 86400000, path: '/' });
-  }
-  req.user = toPublicUser(guest);
-  req.guest = true;
-  req.deviceId = device;
-  next();
 }
 
 /** Attaches req.user when a valid session cookie is present. */
 export function sessionMiddleware(req: AuthedRequest, _res: Response, next: NextFunction) {
   const token = readCookie(req, SESSION_COOKIE);
-  if (token) {
-    const hash = sha256(token);
-    const row = db
-      .prepare('SELECT s.expires_at, u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?')
-      .get(hash) as (UserRow & { expires_at: number }) | undefined;
+  if (!token) return next();
+  const hash = sha256(token);
+  (async () => {
+    const row = await db.one<UserRow & { expires_at: number }>(
+      'SELECT s.expires_at, u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?',
+      [hash]
+    );
     if (row && row.expires_at > now() && row.active) {
       req.user = toPublicUser(row);
       req.sessionTokenHash = hash;
       // Sliding expiry: extend when less than half the lifetime remains.
       if (row.expires_at - now() < SESSION_TTL_MS / 2) {
-        db.prepare('UPDATE sessions SET expires_at = ? WHERE token_hash = ?').run(now() + SESSION_TTL_MS, hash);
+        await db.run('UPDATE sessions SET expires_at = ? WHERE token_hash = ?', [now() + SESSION_TTL_MS, hash]);
       }
     } else if (row) {
-      db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(hash);
+      await db.run('DELETE FROM sessions WHERE token_hash = ?', [hash]);
     }
-  }
-  next();
+  })().then(() => next(), next);
 }
 
 export function requireAuth(req: AuthedRequest, res: Response, next: NextFunction) {
@@ -214,8 +192,8 @@ export function requireRole(role: Role) {
   };
 }
 
-export function purgeExpiredSessions() {
-  db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(now());
+export async function purgeExpiredSessions() {
+  await db.run('DELETE FROM sessions WHERE expires_at < ?', [now()]);
 }
 
 // ---------------------------------------------------------------- login throttling

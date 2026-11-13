@@ -70,7 +70,7 @@ microsoftRouter.get(
     try {
       const tokens = await tokenRequest({ grant_type: 'authorization_code', code: String(req.query.code || ''), redirect_uri: redirectUri(), code_verifier: st.verifier });
       const me: any = await fetch(`${GRAPH}/me?$select=displayName,userPrincipalName,mail`, { headers: { Authorization: `Bearer ${tokens.access_token}` } }).then((r) => (r.ok ? r.json() : null));
-      saveConnection(st.owner, 'microsoft', tokens, me ? `${me.displayName || ''} (${me.mail || me.userPrincipalName || ''})`.trim() : null);
+      await saveConnection(st.owner, 'microsoft', tokens, me ? `${me.displayName || ''} (${me.mail || me.userPrincipalName || ''})`.trim() : null);
       done('connected');
     } catch (err: any) {
       console.error('[microsoft] token exchange failed:', err?.message);
@@ -79,9 +79,12 @@ microsoftRouter.get(
   })
 );
 
-microsoftRouter.get('/status', (req: AuthedRequest, res) => {
-  res.json({ configured: msConfigured(), ...connectionStatus(ownerOf(req), 'microsoft') });
-});
+microsoftRouter.get(
+  '/status',
+  h(async (req: AuthedRequest, res) => {
+    res.json({ configured: msConfigured(), ...(await connectionStatus(ownerOf(req), 'microsoft')) });
+  })
+);
 
 microsoftRouter.get(
   '/connect',
@@ -103,11 +106,14 @@ microsoftRouter.get(
   })
 );
 
-microsoftRouter.post('/disconnect', (req: AuthedRequest, res) => {
-  deleteConnection(ownerOf(req), 'microsoft');
-  if (req.user && !req.guest) logActivity(req.user.id, 'microsoft_disconnected', '');
-  res.json({ ok: true });
-});
+microsoftRouter.post(
+  '/disconnect',
+  h(async (req: AuthedRequest, res) => {
+    await deleteConnection(ownerOf(req), 'microsoft');
+    if (req.user) await logActivity(req.user.id, 'microsoft_disconnected', '');
+    res.json({ ok: true });
+  })
+);
 
 microsoftRouter.get(
   '/files',

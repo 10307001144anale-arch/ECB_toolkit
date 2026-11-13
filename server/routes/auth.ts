@@ -31,22 +31,25 @@ authRouter.post(
       throw new HttpError(429, `Too many failed attempts. Try again in ${Math.ceil(t.retryAfterSec / 60)} minutes.`);
     }
     if (!email || !password) throw new HttpError(400, 'Enter your email and password.');
-    const user = authenticate(email, password);
+    const user = await authenticate(email, password);
     if (!user) {
       recordLoginFailure(throttleKey);
       throw new HttpError(401, 'Incorrect email or password, or the account is deactivated.');
     }
     clearLoginFailures(throttleKey);
-    startSession(req, res, user.id);
-    logActivity(user.id, 'login', '');
+    await startSession(req, res, user.id);
+    await logActivity(user.id, 'login', '');
     res.json({ user: toPublicUser(user) });
   })
 );
 
-authRouter.post('/logout', (req, res) => {
-  endSession(req, res);
-  res.json({ ok: true });
-});
+authRouter.post(
+  '/logout',
+  h(async (req, res) => {
+    await endSession(req, res);
+    res.json({ ok: true });
+  })
+);
 
 authRouter.get('/me', (req: AuthedRequest, res) => {
   res.json({ user: req.user || null });
@@ -58,14 +61,14 @@ authRouter.post(
   h(async (req: AuthedRequest, res) => {
     const current = String(req.body?.currentPassword || '');
     const next = String(req.body?.newPassword || '');
-    const row = getUserById(req.user!.id)!;
+    const row = (await getUserById(req.user!.id))!;
     if (!verifyPassword(current, row.password_hash)) throw new HttpError(400, 'Your current password is incorrect.');
     const problem = passwordProblem(next);
     if (problem) throw new HttpError(400, problem);
-    db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(next), row.id);
-    endAllSessionsForUser(row.id);
-    startSession(req, res, row.id);
-    logActivity(row.id, 'password_changed', '');
+    await db.run('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?', [hashPassword(next), Date.now(), row.id]);
+    await endAllSessionsForUser(row.id);
+    await startSession(req, res, row.id);
+    await logActivity(row.id, 'password_changed', '');
     res.json({ ok: true });
   })
 );

@@ -16,10 +16,6 @@ import type { AuthedRequest } from './auth.ts';
 export type Provider = 'microsoft' | 'google';
 
 export function ownerOf(req: AuthedRequest): string {
-  if (req.guest) {
-    if (!req.deviceId) throw new HttpError(401, 'Your browser session could not be identified. Reload the page and try again.');
-    return `dev:${req.deviceId}`;
-  }
   if (!req.user) throw new HttpError(401, 'Please sign in.');
   return `usr:${req.user.id}`;
 }
@@ -70,38 +66,40 @@ export interface TokenSet {
   expires_in?: number;
 }
 
-export function saveConnection(owner: string, provider: Provider, tokens: TokenSet, accountName: string | null) {
-  const existing = getConnectionRow(owner, provider);
-  db.prepare(
+export async function saveConnection(owner: string, provider: Provider, tokens: TokenSet, accountName: string | null) {
+  const existing = await getConnectionRow(owner, provider);
+  await db.run(
     `INSERT INTO oauth_connections (owner, provider, account_name, access_token_enc, refresh_token_enc, expires_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(owner, provider) DO UPDATE SET account_name = excluded.account_name, access_token_enc = excluded.access_token_enc,
-       refresh_token_enc = excluded.refresh_token_enc, expires_at = excluded.expires_at, updated_at = excluded.updated_at`
-  ).run(
+       refresh_token_enc = excluded.refresh_token_enc, expires_at = excluded.expires_at, updated_at = excluded.updated_at`,
+    [
     owner,
     provider,
     accountName ?? existing?.account_name ?? null,
     encrypt(tokens.access_token),
     tokens.refresh_token ? encrypt(tokens.refresh_token) : existing?.refresh_token_enc ?? null,
     now() + (Number(tokens.expires_in) || 3600) * 1000,
-    now()
+    now(),
+    ]
   );
 }
 
-function getConnectionRow(owner: string, provider: Provider) {
-  return db.prepare('SELECT * FROM oauth_connections WHERE owner = ? AND provider = ?').get(owner, provider) as
-    | { account_name: string | null; access_token_enc: string; refresh_token_enc: string | null; expires_at: number }
-    | undefined;
+async function getConnectionRow(owner: string, provider: Provider) {
+  return db.one<{ account_name: string | null; access_token_enc: string; refresh_token_enc: string | null; expires_at: number }>(
+    'SELECT * FROM oauth_connections WHERE owner = ? AND provider = ?',
+    [owner, provider]
+  );
 }
 
-export function connectionStatus(owner: string, provider: Provider) {
-  const row = getConnectionRow(owner, provider);
+export async function connectionStatus(owner: string, provider: Provider) {
+  const row = await getConnectionRow(owner, provider);
   return { connected: !!row, accountName: row?.account_name ?? null };
 }
 
-export function deleteConnection(owner: string, provider: Provider): string | null {
-  const row = getConnectionRow(owner, provider);
-  db.prepare('DELETE FROM oauth_connections WHERE owner = ? AND provider = ?').run(owner, provider);
+export async function deleteConnection(owner: string, provider: Provider): Promise<string | null> {
+  const row = await getConnectionRow(owner, provider);
+  await db.run('DELETE FROM oauth_connections WHERE owner = ? AND provider = ?', [owner, provider]);
   try {
     return row?.refresh_token_enc ? decrypt(row.refresh_token_enc) : row ? decrypt(row.access_token_enc) : null;
   } catch {
@@ -111,20 +109,20 @@ export function deleteConnection(owner: string, provider: Provider): string | nu
 
 /** A valid access token, refreshing it when it is about to expire. */
 export async function accessTokenFor(owner: string, provider: Provider, refresh: (refreshToken: string) => Promise<TokenSet>): Promise<string> {
-  const row = getConnectionRow(owner, provider);
+  const row = await getConnectionRow(owner, provider);
   const label = provider === 'google' ? 'Google' : 'Microsoft';
   if (!row) throw new HttpError(401, `Connect your ${label} account first.`);
   if (row.expires_at - 60_000 > now()) return decrypt(row.access_token_enc);
   if (!row.refresh_token_enc) {
-    deleteConnection(owner, provider);
+    await deleteConnection(owner, provider);
     throw new HttpError(401, `Your ${label} session expired. Please connect again.`);
   }
   try {
     const tokens = await refresh(decrypt(row.refresh_token_enc));
-    saveConnection(owner, provider, tokens, null);
+    await saveConnection(owner, provider, tokens, null);
     return tokens.access_token;
   } catch {
-    deleteConnection(owner, provider);
+    await deleteConnection(owner, provider);
     throw new HttpError(401, `Your ${label} session expired. Please connect again.`);
   }
 }

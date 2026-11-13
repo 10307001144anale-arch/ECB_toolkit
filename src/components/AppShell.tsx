@@ -31,6 +31,7 @@ interface NavItem {
 const ADMIN_NAV: NavItem[] = [
   { to: '/admin', label: 'Dashboard', icon: <Home className="h-4 w-4" />, exact: true },
   { to: '/admin/templates', label: 'Templates', icon: <LayoutTemplate className="h-4 w-4" /> },
+  { to: '/admin/clients', label: 'Clients', icon: <Users className="h-4 w-4" /> },
   { to: '/admin/activity', label: 'Activity', icon: <Activity className="h-4 w-4" /> },
 ];
 
@@ -68,7 +69,7 @@ export function AppShell({ children, mode }: { children: React.ReactNode; mode: 
   const sidebar = (
     <div className="flex h-full flex-col">
       <div className="px-5 py-5">
-        <Brand subtitle={mode === 'admin' ? 'Admin portal' : 'Certificate generator'} />
+        <Brand subtitle={mode === 'admin' ? 'Super admin' : 'Client admin'} />
       </div>
       <nav className="flex-1 space-y-1 px-3" aria-label="Main">
         {nav.map((n) => (
@@ -88,23 +89,6 @@ export function AppShell({ children, mode }: { children: React.ReactNode; mode: 
         ))}
       </nav>
       <div className="border-t border-slate-200 p-3">
-        {mode === 'client' ? (
-          <Link
-            to="/admin"
-            onClick={() => setMobileOpen(false)}
-            className="mb-1 flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900"
-          >
-            <ShieldCheck className="h-4 w-4" /> {user?.role === 'admin' ? 'Back to admin portal' : 'Admin portal'}
-          </Link>
-        ) : (
-          <Link
-            to="/app"
-            onClick={() => setMobileOpen(false)}
-            className="mb-1 flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900"
-          >
-            <ArrowLeftRight className="h-4 w-4" /> Open client portal
-          </Link>
-        )}
         {signedInHere ? (
           <>
             <div className="px-2 pb-2 pt-1">
@@ -117,18 +101,14 @@ export function AppShell({ children, mode }: { children: React.ReactNode; mode: 
             <button
               onClick={async () => {
                 await logout();
-                navigate(mode === 'admin' ? '/login' : '/app', { replace: true });
+                navigate('/login', { replace: true });
               }}
               className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm text-slate-600 hover:bg-slate-100"
             >
               <LogOut className="h-4 w-4" /> Sign out
             </button>
           </>
-        ) : (
-          <p className="px-3 pt-1 text-xs text-slate-500">
-            {user?.role === 'admin' ? `Signed in as ${user.name} (admin). Using the public client portal.` : 'No sign-in needed. Your presets and history are kept for this browser.'}
-          </p>
-        )}
+        ) : null}
       </div>
     </div>
   );

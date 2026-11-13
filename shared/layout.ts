@@ -3,6 +3,7 @@
 // may carry admin "default wording"; clients edit a copy of it per batch, never
 // the template itself.
 
+import { ALL_FORMATTING, hasFormatting, richToPlain, sanitizeRich, type FormattingPermissions } from './rich.ts';
 import type {
   BoxType,
   CustomFontRef,
@@ -11,6 +12,7 @@ import type {
   QrBox,
   SignatureBox,
   SignerCaption,
+  ReferenceOverlay,
   TemplateBox,
   TemplateLayout,
   TextBox,
@@ -35,7 +37,52 @@ const KEY_RE = /^[a-z][a-z0-9_]{0,47}$/;
 const HEX_RE = /^#[0-9a-fA-F]{6}$/;
 
 export function emptyLayout(): TemplateLayout {
-  return { artworkFileId: null, artworkMime: null, pages: [], boxes: [], fonts: [] };
+  return {
+    artworkFileId: null,
+    artworkMime: null,
+    pages: [],
+    boxes: [],
+    fonts: [],
+    referenceFileId: null,
+    referenceMime: null,
+    referencePages: [],
+    referenceOverlay: defaultOverlay(),
+  };
+}
+
+export function defaultOverlay(): ReferenceOverlay {
+  return { opacity: 0.5, offsetX: 0, offsetY: 0, scale: 1, alignmentConfirmed: false };
+}
+
+export interface AlignmentCheck {
+  ok: boolean;
+  problems: string[];
+}
+
+/**
+ * Compares the blank design with the reference certificate: page count,
+ * orientation and aspect ratio must match (within 1%) unless the
+ * administrator has calibrated the overlay and confirmed the alignment.
+ */
+export function checkReferenceAlignment(layout: TemplateLayout): AlignmentCheck {
+  const problems: string[] = [];
+  if (!layout.referenceFileId || !layout.referencePages.length || !layout.pages.length) return { ok: true, problems };
+  if (layout.referencePages.length !== layout.pages.length) {
+    problems.push(`The blank design has ${layout.pages.length} page(s) but the reference certificate has ${layout.referencePages.length}.`);
+  }
+  layout.pages.forEach((p, i) => {
+    const r = layout.referencePages[i];
+    if (!r) return;
+    const landscapeA = p.width >= p.height;
+    const landscapeB = r.width >= r.height;
+    if (landscapeA !== landscapeB) problems.push(`Page ${i + 1}: one file is portrait and the other landscape.`);
+    else {
+      const ratioDiff = Math.abs(p.width / p.height - r.width / r.height) / (p.width / p.height);
+      if (ratioDiff > 0.01) problems.push(`Page ${i + 1}: the proportions differ by ${(ratioDiff * 100).toFixed(1)}% (${Math.round(p.width)}×${Math.round(p.height)} vs ${Math.round(r.width)}×${Math.round(r.height)}).`);
+    }
+  });
+  const ok = problems.length === 0 || layout.referenceOverlay.alignmentConfirmed;
+  return { ok, problems };
 }
 
 export function makeKey(label: string): string {
@@ -80,6 +127,8 @@ export function newBox(type: BoxType, id: string, rect: { page: number; x: numbe
         ...base,
         type: 'text',
         defaultText: '',
+        defaultRich: null,
+        formatting: { ...ALL_FORMATTING },
         fontFamily: 'Helvetica',
         fontWeight: '400',
         italic: false,
@@ -107,6 +156,12 @@ export function newBox(type: BoxType, id: string, rect: { page: number; x: numbe
 }
 
 // --------------------------------------------------------------------------- signer caption
+
+function sanitizePerms(p: any): FormattingPermissions {
+  const out = { ...ALL_FORMATTING };
+  if (p && typeof p === 'object') for (const k of Object.keys(out) as (keyof FormattingPermissions)[]) if (typeof p[k] === 'boolean') out[k] = p[k];
+  return out;
+}
 
 export function defaultCaption(): SignerCaption {
   return { enabled: false, name: '', title: '', clientEditable: true, fontFamily: 'Helvetica', fontSize: 11, bold: true, color: '#1f2937', showLine: true };
@@ -190,7 +245,7 @@ function fileId(v: unknown): string | null {
   return typeof v === 'string' && /^[A-Za-z0-9_-]{8,64}$/.test(v) ? v : null;
 }
 
-export function sanitizeLayout(input: any): TemplateLayout {
+export function sanitizeLayout(input: any, opts: { renumberSignatures?: boolean } = {}): TemplateLayout {
   const src = input && typeof input === 'object' ? input : {};
   const pages: LayoutPage[] = Array.isArray(src.pages)
     ? src.pages.slice(0, 50).map((p: any) => ({
@@ -200,6 +255,21 @@ export function sanitizeLayout(input: any): TemplateLayout {
       }))
     : [];
   const pageCount = Math.max(1, pages.length);
+  const referencePages: LayoutPage[] = Array.isArray(src.referencePages)
+    ? src.referencePages.slice(0, 50).map((p: any) => ({
+        width: num(p?.width, 842, 10, 20000),
+        height: num(p?.height, 595, 10, 20000),
+        previewFileId: fileId(p?.previewFileId),
+      }))
+    : [];
+  const ro = src.referenceOverlay || {};
+  const referenceOverlay: ReferenceOverlay = {
+    opacity: num(ro.opacity, 0.5, 0, 1),
+    offsetX: num(ro.offsetX, 0, -20, 20),
+    offsetY: num(ro.offsetY, 0, -20, 20),
+    scale: num(ro.scale, 1, 0.8, 1.25),
+    alignmentConfirmed: bool(ro.alignmentConfirmed, false),
+  };
   const fonts: CustomFontRef[] = Array.isArray(src.fonts)
     ? src.fonts.slice(0, 30).flatMap((f: any) => {
         const id = fileId(f?.fileId);
@@ -241,6 +311,12 @@ export function sanitizeLayout(input: any): TemplateLayout {
         ...base,
         type: 'text',
         defaultText: str(b?.defaultText, '', 5000),
+        defaultRich: (() => {
+          const r = sanitizeRich(b?.defaultRich, 5000);
+          // Keep only when it matches the plain default wording and carries formatting.
+          return r && hasFormatting(r) && richToPlain(r) === str(b?.defaultText, '', 5000) ? r : null;
+        })(),
+        formatting: sanitizePerms(b?.formatting),
         fontFamily: str(b?.fontFamily, 'Helvetica', 60) || 'Helvetica',
         fontWeight: oneOf(b?.fontWeight, ['400', '700'] as const, '400'),
         italic: bool(b?.italic, false),
@@ -301,15 +377,70 @@ export function sanitizeLayout(input: any): TemplateLayout {
     artworkFileId: fileId(src.artworkFileId),
     artworkMime: oneOf(src.artworkMime, ['application/pdf', 'image/png', 'image/jpeg'] as const, 'image/png') as TemplateLayout['artworkMime'],
     pages,
-    boxes,
+    boxes: orderSignatures(boxes, !!opts.renumberSignatures),
     fonts,
+    referenceFileId: fileId(src.referenceFileId),
+    referenceMime: src.referenceFileId
+      ? (oneOf(src.referenceMime, ['application/pdf', 'image/png', 'image/jpeg'] as const, 'image/png') as TemplateLayout['referenceMime'])
+      : null,
+    referencePages: src.referenceFileId ? referencePages : [],
+    referenceOverlay,
   };
+}
+
+// --------------------------------------------------------------------------- signature order
+
+/** Signature boxes sorted left → right (by centre); nearly equal columns are sorted top → bottom. */
+export function signatureOrder<T extends { type: string; page: number; x: number; y: number; w: number; h: number }>(boxes: T[]): T[] {
+  return boxes
+    .filter((b) => b.type === 'signature')
+    .slice()
+    .sort((a, b) => {
+      if (a.page !== b.page) return a.page - b.page;
+      const dx = a.x + a.w / 2 - (b.x + b.w / 2);
+      if (Math.abs(dx) > 2) return dx;
+      return a.y + a.h / 2 - (b.y + b.h / 2);
+    });
+}
+
+/**
+ * Puts signature boxes in left-to-right order and (when the administrator
+ * saves) numbers them 1, 2, 3…
+ * Automatic keys (signature, signature_N) become signature_1, signature_2…
+ * and automatic labels ("Signature", "Signature N") become "Signature 1"…
+ * Custom labels such as "Principal" are kept.
+ */
+export function orderSignatures(boxes: TemplateBox[], renumber = true): TemplateBox[] {
+  const ordered = signatureOrder(boxes) as SignatureBox[];
+  if (ordered.length === 0) return boxes;
+  if (!renumber) {
+    let j = 0;
+    return boxes.map((b) => (b.type === 'signature' ? ordered[j++] : b));
+  }
+  const others = new Set(boxes.filter((b) => b.type !== 'signature').map((b) => b.key));
+  const renamed = ordered.map((b, i) => {
+    const n = i + 1;
+    const autoKey = /^signature(_\d+)?$/.test(b.key) && !others.has(`signature_${n}`);
+    const autoLabel = /^signature( \d+)?$/i.test(b.label.trim());
+    return { ...b, key: autoKey ? `signature_${n}` : b.key, label: autoLabel ? `Signature ${n}` : b.label };
+  });
+  // Avoid duplicate keys after renumbering.
+  const seen = new Set(others);
+  for (const b of renamed) {
+    if (seen.has(b.key)) b.key = uniqueKey(b.key, seen);
+    seen.add(b.key);
+  }
+  let i = 0;
+  return boxes.map((b) => (b.type === 'signature' ? renamed[i++] : b));
 }
 
 /** Problems that block publishing. */
 export function publishProblems(layout: TemplateLayout): string[] {
   const problems: string[] = [];
   if (!layout.artworkFileId || layout.pages.length === 0) problems.push('Upload the certificate artwork first.');
+  if (!layout.referenceFileId) problems.push('Upload the complete reference certificate (the finished example) so boxes can be checked against it.');
+  const align = checkReferenceAlignment(layout);
+  if (!align.ok) problems.push(`The reference certificate does not match the blank design: ${align.problems.join(' ')} Calibrate the overlay and confirm the alignment, or upload matching files.`);
   if (layout.boxes.length === 0) problems.push('Add at least one box.');
   if (!layout.boxes.some((b) => b.type === 'text')) problems.push('Add at least one text box so clients can enter wording.');
   for (const b of layout.boxes) {
