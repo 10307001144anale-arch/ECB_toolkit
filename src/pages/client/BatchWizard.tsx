@@ -173,7 +173,7 @@ export default function BatchWizard() {
   const headerKey = w.data?.headers.join('|') || '';
   useEffect(() => {
     if (!w.data) return;
-    const next = autoMapping(d.placeholders, w.data.headers, w.mapping);
+    const next = autoMapping(d.placeholders, w.data.headers, w.mapping, w.template?.layout, w.content);
     if (JSON.stringify(next) !== JSON.stringify(w.mapping)) set({ mapping: next });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [placeholderKey, headerKey]);

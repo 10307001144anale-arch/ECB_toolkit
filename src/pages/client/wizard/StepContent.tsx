@@ -13,6 +13,8 @@ import { CertificatePreview } from './CertificatePreview';
 import { RichTextEditor, type RichEditorHandle } from '../../../components/RichTextEditor';
 import { hasFormatting, plainToRich, richToPlain, type FormattingPermissions, type RichDoc } from '../../../../shared/rich';
 import type { StepProps } from './state';
+import { DATE_BOX_FORMATS, dateBoxText, dateChoiceFor, dateColumnKey, formatDate, isoDay, parseDate, todayUtc } from '../../../../shared/dates';
+import type { DateChoice } from '../../../../shared/types';
 
 const COMMON_FIELDS = [
   { name: 'name', label: 'Participant name' },
@@ -70,6 +72,10 @@ export function StepContent({ w, d, set }: StepProps) {
       else delete rich[key];
       return { content: { ...s.content, texts: { ...s.content.texts, [key]: richToPlain(doc) }, rich } };
     });
+  const setDate = (box: TextBox, choice: DateChoice) =>
+    set((s) => ({
+      content: { ...s.content, dates: { ...(s.content.dates || {}), [box.key]: choice }, texts: { ...s.content.texts, [box.key]: dateBoxText(box, choice) } },
+    }));
   const setQr = (key: string, patch: Partial<{ mode: 'custom' | 'verification'; value: string }>) =>
     set((s) => ({ content: { ...s.content, qr: { ...s.content.qr, [key]: { ...s.content.qr[key], ...patch } } } }));
 
@@ -128,7 +134,20 @@ export function StepContent({ w, d, set }: StepProps) {
           Write the wording for each box. Use <b>Insert field</b> to add participant details like {'{{name}}'} — they are filled in from your spreadsheet for each certificate.
         </Alert>
 
-        {textBoxes.map((b) => (
+        {textBoxes.map((b) =>
+          b.date ? (
+            <DateBoxEditor
+              key={b.id}
+              box={b}
+              choice={dateChoiceFor(b, w.content)}
+              printed={w.content.texts[b.key] || ''}
+              onChange={(c) => setDate(b, c)}
+              onFocus={() => setActive(b.key)}
+              active={active === b.key}
+              headers={headers}
+              issues={d.contentIssues.filter((i) => i.boxKey === b.key)}
+            />
+          ) : (
           <TextBoxEditor
             key={b.id}
             box={b}
@@ -143,7 +162,8 @@ export function StepContent({ w, d, set }: StepProps) {
             registered={d.registered}
             issues={d.contentIssues.filter((i) => i.boxKey === b.key)}
           />
-        ))}
+          )
+        )}
 
         {qrBoxes.map((b) => {
           const q = w.content.qr[b.key] || { mode: 'verification', value: '' };
@@ -226,6 +246,99 @@ export function StepContent({ w, d, set }: StepProps) {
         }}
       />
     </div>
+  );
+}
+
+const DATE_SOURCE_LABEL: Record<DateChoice['source'], string> = {
+  today: 'Date of generation',
+  fixed: 'A chosen date',
+  column: 'From the participant list',
+};
+
+function DateBoxEditor({
+  box,
+  choice,
+  printed,
+  onChange,
+  onFocus,
+  active,
+  headers,
+  issues,
+}: {
+  box: TextBox;
+  choice: DateChoice;
+  printed: string;
+  onChange: (c: DateChoice) => void;
+  onFocus: () => void;
+  active: boolean;
+  headers: string[];
+  issues: { level: 'error' | 'warning'; message: string }[];
+}) {
+  const editable = !!box.date?.clientEditable;
+  const field = dateColumnKey(box);
+  const example = choice.source === 'column' ? (box.date?.prefix || '') + formatDate(todayUtc(), choice.format) : printed;
+  return (
+    <Card className={cx('p-4 transition-shadow', active && 'ring-2 ring-brand-500')} onFocusCapture={onFocus} onClick={onFocus}>
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <p className="font-medium text-slate-900">{box.label}</p>
+        <Badge tone="blue">Date</Badge>
+      </div>
+      {box.description && <p className="mb-2 text-xs text-slate-500">{box.description}</p>}
+      {editable ? (
+        <div className="space-y-3">
+          <Field label="Date to print" htmlFor={`date-src-${box.key}`}>
+            <Select
+              id={`date-src-${box.key}`}
+              value={choice.source}
+              onChange={(e) => {
+                const source = e.target.value as DateChoice['source'];
+                onChange({ ...choice, source, fixedDate: source === 'fixed' && !parseDate(choice.fixedDate) ? isoDay(todayUtc()) : choice.fixedDate });
+              }}
+            >
+              {(Object.keys(DATE_SOURCE_LABEL) as DateChoice['source'][]).map((k) => (
+                <option key={k} value={k}>
+                  {DATE_SOURCE_LABEL[k]}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          {choice.source === 'fixed' && (
+            <Field label="Date" htmlFor={`date-fixed-${box.key}`}>
+              <Input id={`date-fixed-${box.key}`} type="date" value={choice.fixedDate} onChange={(e) => onChange({ ...choice, fixedDate: e.target.value })} />
+            </Field>
+          )}
+          <Field label="Format" htmlFor={`date-fmt-${box.key}`}>
+            <Select id={`date-fmt-${box.key}`} value={choice.format} onChange={(e) => onChange({ ...choice, format: e.target.value })}>
+              {DATE_BOX_FORMATS.map((f) => (
+                <option key={f.value} value={f.value}>
+                  {formatDate(todayUtc(), f.value)}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        </div>
+      ) : (
+        <p className="text-sm text-slate-600">
+          {DATE_SOURCE_LABEL[choice.source]} — set by your administrator.
+        </p>
+      )}
+      {choice.source === 'column' && (
+        <p className="mt-2 text-xs text-slate-500">
+          Each certificate uses its own date from your participant list — the column matched to <code className="rounded bg-slate-100 px-1 font-mono">{`{{${field}}}`}</code>{headers.length ? ' (e.g. "Date")' : ''}.
+        </p>
+      )}
+      {example && (
+        <p className="mt-2 text-xs text-slate-500">
+          Prints as: <span className="font-medium text-slate-800">{example}</span>
+        </p>
+      )}
+      {issues.map((i, n) => (
+        <p key={n} className={cx('mt-2 flex items-start gap-1 text-xs', i.level === 'error' ? 'text-red-600' : 'text-amber-700')}>
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          {i.message}
+        </p>
+      ))}
+    </Card>
   );
 }
 

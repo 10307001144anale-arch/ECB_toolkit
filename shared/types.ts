@@ -70,6 +70,24 @@ export interface TextBox extends BoxBase {
   letterSpacing: number; // pt
   transform: TextTransform;
   maxChars: number | null;
+  /** Set when this is a Date box: the printed wording is a formatted date instead of typed text. */
+  date?: DateBoxConfig | null;
+}
+
+export type DateSource = 'today' | 'fixed' | 'column';
+/** Where a Date box's date comes from and how it is written. */
+export interface DateChoice {
+  /** today = the day the certificates are generated; fixed = a chosen date; column = each participant's date from the spreadsheet. */
+  source: DateSource;
+  /** YYYY-MM-DD, used when source = fixed. */
+  fixedDate: string;
+  format: string;
+}
+export interface DateBoxConfig extends DateChoice {
+  /** Text printed before the date, e.g. "Date: ". */
+  prefix: string;
+  /** Clients may change the source, date and format for their batch. */
+  clientEditable: boolean;
 }
 
 export type QrContentMode = 'client' | 'verification' | 'either';
@@ -251,6 +269,8 @@ export interface ContentConfig {
   qr: Record<string, QrContent>;
   signatures: Record<string, SignatureContent>;
   photos: Record<string, PhotoContent>;
+  /** Client choices for Date boxes (only kept when the box allows changes). */
+  dates?: Record<string, DateChoice>;
 }
 
 export type PlaceholderType = 'text' | 'number' | 'date';

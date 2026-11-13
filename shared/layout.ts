@@ -3,6 +3,7 @@
 // may carry admin "default wording"; clients edit a copy of it per batch, never
 // the template itself.
 
+import { dateBoxText, dateChoiceFor, defaultDateConfig, sanitizeDateConfig } from './dates.ts';
 import { ALL_FORMATTING, hasFormatting, richToPlain, sanitizeRich, type FormattingPermissions } from './rich.ts';
 import type {
   BoxType,
@@ -153,6 +154,22 @@ export function newBox(type: BoxType, id: string, rect: { page: number; x: numbe
     case 'signature':
       return { ...base, type: 'signature', required: false, source: 'either', fixedSignatureFileId: null, fit: 'contain', align: 'center', caption: defaultCaption() };
   }
+}
+
+/** A text box that prints a date (generation date, a chosen date or a spreadsheet column). */
+export function newDateBox(id: string, rect: { page: number; x: number; y: number; w: number; h: number }, taken: Set<string>): TextBox {
+  const n = [...taken].filter((k) => k.includes('date')).length + 1;
+  const box = newBox('text', id, rect, taken) as TextBox;
+  box.key = uniqueKey(n === 1 ? 'issue_date' : `issue_date_${n}`, taken);
+  box.label = n === 1 ? 'Date' : `Date ${n}`;
+  box.required = true;
+  box.date = defaultDateConfig();
+  box.wrap = false;
+  box.maxFontSize = 16;
+  box.fontSize = 14;
+  box.formatting = Object.fromEntries(Object.keys(box.formatting).map((k) => [k, false])) as unknown as FormattingPermissions;
+  box.defaultText = dateBoxText(box, dateChoiceFor(box, null));
+  return box;
 }
 
 // --------------------------------------------------------------------------- signer caption
@@ -334,6 +351,16 @@ export function sanitizeLayout(input: any, opts: { renumberSignatures?: boolean 
         transform: oneOf(b?.transform, ['none', 'uppercase', 'lowercase', 'titlecase'] as const, 'none'),
         maxChars: b?.maxChars == null || b?.maxChars === '' ? null : Math.round(num(b?.maxChars, 0, 1, 5000)),
       };
+      const date = sanitizeDateConfig(b?.date);
+      if (date) {
+        // Date box: the wording is generated, never typed.
+        box.date = date;
+        box.defaultText = dateBoxText(box, dateChoiceFor(box, null));
+        box.defaultRich = null;
+        box.multiline = false;
+        box.maxChars = null;
+        box.formatting = { ...box.formatting, bold: false, italic: false, underline: false, color: false, highlight: false, size: false, align: false } as FormattingPermissions;
+      }
       boxes.push(box);
     } else if (type === 'qr') {
       const box: QrBox = {

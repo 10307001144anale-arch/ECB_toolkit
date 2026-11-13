@@ -3,9 +3,11 @@
 import { db } from './db.ts';
 import { emptyLayout, sanitizeLayout } from '../shared/layout.ts';
 import { hasFormatting, richToPlain, sanitizeRich, type RichDoc } from '../shared/rich.ts';
+import { sanitizeDateChoice } from '../shared/dates.ts';
 import type {
   ClientTemplate,
   ContentConfig,
+  DateChoice,
   MappingConfig,
   PublicUser,
   TemplateDetail,
@@ -177,7 +179,15 @@ export function sanitizeContent(input: any): ContentConfig {
     const doc = sanitizeRich(v, 5000);
     if (doc && hasFormatting(doc) && richToPlain(doc) === texts[k]) rich[k] = doc;
   }
-  return Object.keys(rich).length ? { texts, qr, signatures, photos, rich } : { texts, qr, signatures, photos };
+  const dates: Record<string, DateChoice> = {};
+  for (const [k, v] of Object.entries(src.dates || {}).slice(0, 50)) {
+    const c = keyOk(k) ? sanitizeDateChoice(v) : null;
+    if (c) dates[k] = c;
+  }
+  const out: ContentConfig = { texts, qr, signatures, photos };
+  if (Object.keys(rich).length) out.rich = rich;
+  if (Object.keys(dates).length) out.dates = dates;
+  return out;
 }
 
 export function sanitizeMapping(input: any): MappingConfig {

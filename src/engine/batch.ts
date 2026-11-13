@@ -14,6 +14,7 @@ import {
   SYSTEM_PLACEHOLDERS,
 } from '../../shared/placeholders';
 import { richToPlain, substituteRich } from '../../shared/rich';
+import { dateBoxText, dateChoiceFor, dateColumnKey, formatDate, parseDate, sanitizeDateChoice } from '../../shared/dates';
 import type {
   ContentConfig,
   PhotoCrop,
@@ -33,7 +34,11 @@ export const PREVIEW_CERT_ID = 'CG-PREV-IEW0-0000';
 export function emptyContent(layout: TemplateLayout): ContentConfig {
   const c: ContentConfig = { texts: {}, qr: {}, signatures: {}, photos: {} };
   for (const b of layout.boxes) {
-    if (b.type === 'text') {
+    if (b.type === 'text' && b.date) {
+      const choice = dateChoiceFor(b, null);
+      c.texts[b.key] = dateBoxText(b, choice);
+      if (b.date.clientEditable) (c.dates ||= {})[b.key] = choice;
+    } else if (b.type === 'text') {
       c.texts[b.key] = b.defaultText || '';
       if (b.defaultRich) (c.rich ||= {})[b.key] = b.defaultRich;
     }
@@ -52,6 +57,14 @@ export function fitContentToLayout(layout: TemplateLayout, content: Partial<Cont
   const base = emptyContent(layout);
   if (!content) return base;
   for (const b of layout.boxes) {
+    if (b.type === 'text' && b.date) {
+      // Date wording is always recomputed, so "date of generation" is today's date even for an old preset.
+      const saved = b.date.clientEditable ? sanitizeDateChoice(content.dates?.[b.key]) : null;
+      const choice = saved || dateChoiceFor(b, null);
+      if (b.date.clientEditable) (base.dates ||= {})[b.key] = choice;
+      base.texts[b.key] = dateBoxText(b, choice);
+      continue;
+    }
     if (b.type === 'text' && typeof content.texts?.[b.key] === 'string') {
       base.texts[b.key] = content.texts[b.key];
       const r = content.rich?.[b.key];
@@ -129,6 +142,11 @@ export interface ContentIssue {
 export function contentIssues(layout: TemplateLayout, content: ContentConfig): ContentIssue[] {
   const issues: ContentIssue[] = [];
   for (const b of layout.boxes) {
+    if (b.type === 'text' && b.date) {
+      const ch = dateChoiceFor(b, content);
+      if (ch.source === 'fixed' && !parseDate(ch.fixedDate)) issues.push({ boxKey: b.key, level: b.required ? 'error' : 'warning', message: `Choose the date for "${b.label}".` });
+      continue;
+    }
     if (b.type === 'text') {
       const t = content.texts[b.key] || '';
       if (b.required && !t.trim()) issues.push({ boxKey: b.key, level: 'error', message: `"${b.label}" is required.` });
@@ -149,8 +167,16 @@ export function contentIssues(layout: TemplateLayout, content: ContentConfig): C
 
 // ------------------------------------------------------------------ mapping
 
-export function autoMapping(placeholders: PlaceholderInfo[], headers: string[], previous?: MappingConfig | null): MappingConfig {
+export function autoMapping(placeholders: PlaceholderInfo[], headers: string[], previous?: MappingConfig | null, layout?: TemplateLayout, content?: ContentConfig): MappingConfig {
   const out: MappingConfig = { placeholders: {}, recipientColumn: null, idColumn: null };
+  // Date boxes reading a column: treat that column as a date written in the box's format.
+  const dateFormats = new Map<string, string>();
+  for (const b of layout?.boxes || []) {
+    if (b.type === 'text' && b.date) {
+      const ch = dateChoiceFor(b, content);
+      if (ch.source === 'column') dateFormats.set(normKey(dateColumnKey(b)), ch.format);
+    }
+  }
   const taken = new Set<string>();
   for (const p of placeholders) {
     if (p.system) continue;
@@ -160,8 +186,8 @@ export function autoMapping(placeholders: PlaceholderInfo[], headers: string[], 
     if (column) taken.add(column);
     out.placeholders[p.key] = {
       column,
-      type: prev?.type || (/date/i.test(p.key) ? 'date' : 'text'),
-      dateFormat: prev?.dateFormat || 'D MMMM YYYY',
+      type: dateFormats.has(p.key) ? 'date' : prev?.type || (/date/i.test(p.key) ? 'date' : 'text'),
+      dateFormat: prev?.dateFormat || dateFormats.get(p.key) || 'D MMMM YYYY',
     };
   }
   const prevRecipient = previous?.recipientColumn;
@@ -177,77 +203,7 @@ export function autoMapping(placeholders: PlaceholderInfo[], headers: string[], 
 
 // ------------------------------------------------------------------ value formatting
 
-const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-
-export const DATE_FORMATS = [
-  { value: 'D MMMM YYYY', example: '12 November 2026' },
-  { value: 'Do MMMM YYYY', example: '12th November 2026' },
-  { value: 'MMMM D, YYYY', example: 'November 12, 2026' },
-  { value: 'DD/MM/YYYY', example: '12/11/2026' },
-  { value: 'MM/DD/YYYY', example: '11/12/2026' },
-  { value: 'YYYY-MM-DD', example: '2026-11-12' },
-  { value: 'D MMM YYYY', example: '12 Nov 2026' },
-  { value: 'as-is', example: 'Keep as written' },
-];
-
-/** Parses common spreadsheet date forms. Slash dates are read day-first (DD/MM/YYYY). */
-export function parseDate(raw: string): Date | null {
-  const s = raw.trim();
-  if (!s) return null;
-  if (/^\d{5}(\.\d+)?$/.test(s)) {
-    const serial = Number(s);
-    if (serial > 20000 && serial < 80000) return new Date(Date.UTC(1899, 11, 30) + Math.floor(serial) * 86400000);
-  }
-  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
-  if (m) return utc(+m[1], +m[2], +m[3]);
-  m = s.match(/^(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{2,4})$/);
-  if (m) {
-    let [d, mo, y] = [+m[1], +m[2], +m[3]];
-    if (y < 100) y += 2000;
-    if (mo > 12 && d <= 12) [d, mo] = [mo, d];
-    return utc(y, mo, d);
-  }
-  m = s.match(/^(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]{3,9})\.?,?\s+(\d{4})$/);
-  if (m) {
-    const mi = MONTHS.findIndex((x) => x.toLowerCase().startsWith(m![2].toLowerCase().slice(0, 3)));
-    if (mi >= 0) return utc(+m[3], mi + 1, +m[1]);
-  }
-  m = s.match(/^([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})$/);
-  if (m) {
-    const mi = MONTHS.findIndex((x) => x.toLowerCase().startsWith(m![1].toLowerCase().slice(0, 3)));
-    if (mi >= 0) return utc(+m[3], mi + 1, +m[2]);
-  }
-  return null;
-}
-
-function utc(y: number, m: number, d: number): Date | null {
-  const dt = new Date(Date.UTC(y, m - 1, d));
-  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) return null;
-  return dt;
-}
-
-function ordinal(n: number) {
-  const s = ['th', 'st', 'nd', 'rd'];
-  const v = n % 100;
-  return n + (s[(v - 20) % 10] || s[v] || s[0]);
-}
-
-export function formatDate(d: Date, fmt: string): string {
-  const day = d.getUTCDate();
-  const month = d.getUTCMonth();
-  const year = d.getUTCFullYear();
-  return fmt.replace(/YYYY|MMMM|MMM|MM|Do|DD|D/g, (t) => {
-    switch (t) {
-      case 'YYYY': return String(year);
-      case 'MMMM': return MONTHS[month];
-      case 'MMM': return MONTHS[month].slice(0, 3);
-      case 'MM': return String(month + 1).padStart(2, '0');
-      case 'Do': return ordinal(day);
-      case 'DD': return String(day).padStart(2, '0');
-      default: return String(day);
-    }
-  });
-}
+export { DATE_FORMATS, formatDate, parseDate } from '../../shared/dates';
 
 export function formatValue(raw: string, setting: PlaceholderSetting | undefined): { value: string; error?: string } {
   const v = (raw ?? '').trim();

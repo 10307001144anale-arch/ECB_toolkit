@@ -6,6 +6,7 @@ import {
   AlignVerticalJustifyCenter,
   AlignVerticalJustifyEnd,
   AlignVerticalJustifyStart,
+  CalendarDays,
   ChevronDown,
   Copy,
   Trash2,
@@ -14,6 +15,8 @@ import {
 } from 'lucide-react';
 import type { CustomFontRef, PhotoBox, QrBox, SignatureBox, TemplateBox, TemplateLayout, TextBox } from '../../../../shared/types';
 import { defaultCaption, FONT_FAMILIES, makeKey } from '../../../../shared/layout';
+import { DATE_BOX_FORMATS, dateBoxText, dateChoiceFor, dateColumnKey, formatDate, isoDay, todayUtc } from '../../../../shared/dates';
+import type { DateBoxConfig } from '../../../../shared/types';
 import { ALL_FORMATTING, hasFormatting, plainToRich, richToPlain, type FormattingPermissions } from '../../../../shared/rich';
 import { RichTextEditor } from '../../../components/RichTextEditor';
 import { api, fileUrl } from '../../../lib/api';
@@ -85,8 +88,17 @@ interface Props {
   onDuplicate: () => void;
 }
 
-export function BoxProperties({ box, layout, published, onChange, onDelete, onDuplicate }: Props) {
-  const st = BOX_STYLE[box.type];
+export function BoxProperties({ box, layout, published, onChange: rawChange, onDelete, onDuplicate }: Props) {
+  // A Date box's printed wording follows its key (column mode), so keep it in step when the key changes.
+  const onChange: Props['onChange'] = (patch, commit) => {
+    if (box.type === 'text' && box.date && 'key' in patch && patch.key) {
+      const next = { ...box, key: patch.key } as TextBox;
+      patch = { ...patch, defaultText: dateBoxText(next, dateChoiceFor(next, null)) } as Partial<TemplateBox>;
+    }
+    rawChange(patch, commit);
+  };
+  const isDate = box.type === 'text' && !!box.date;
+  const st = isDate ? { ...BOX_STYLE.text, chip: 'bg-teal-600', name: 'Date box', icon: <CalendarDays className="h-3.5 w-3.5" /> } : BOX_STYLE[box.type];
   const [keyTouched, setKeyTouched] = useState(!!published);
   const keyClash = layout.boxes.some((b) => b.id !== box.id && b.key === box.key);
   const keyInvalid = !/^[a-z][a-z0-9_]{0,47}$/.test(box.key);
@@ -152,10 +164,10 @@ export function BoxProperties({ box, layout, published, onChange, onDelete, onDu
           />
         </Field>
         <Toggle checked={box.required} onChange={(v) => set({ required: v })} label="Required" description={box.type === 'text' ? 'Clients must fill this box.' : 'Every certificate must include this.'} />
-        {box.type === 'text' && (
+        {box.type === 'text' && !box.date && (
           <FormattingPerms box={box} onChange={(formatting) => onChange({ formatting } as Partial<TemplateBox>, true)} />
         )}
-        {box.type === 'text' && (
+        {box.type === 'text' && !box.date && (
           <Field
             label="Default wording"
             htmlFor="bp-default"
@@ -178,6 +190,8 @@ export function BoxProperties({ box, layout, published, onChange, onDelete, onDu
           </Field>
         )}
       </Section>
+
+      {box.type === 'text' && box.date && <DateSection box={box} onChange={(p) => onChange(p as Partial<TemplateBox>, true)} />}
 
       <Section title="Position & size" defaultOpen={false}>
         <div className="grid grid-cols-2 gap-2">
@@ -611,3 +625,54 @@ export function FontManager({ fonts, onChange }: { fonts: CustomFontRef[]; onCha
 }
 
 export { Section, Button };
+
+function DateSection({ box, onChange }: { box: TextBox; onChange: (p: Partial<TextBox>) => void }) {
+  const cfg = box.date!;
+  const upd = (p: Partial<DateBoxConfig>) => {
+    const date = { ...cfg, ...p };
+    const next = { ...box, date };
+    onChange({ date, defaultText: dateBoxText(next, dateChoiceFor(next, null)) });
+  };
+  const sample = formatDate(todayUtc(), cfg.format);
+  return (
+    <Section title="Date">
+      <Field label="Date to print">
+        <Segmented
+          size="sm"
+          ariaLabel="Date source"
+          value={cfg.source}
+          onChange={(v) => upd({ source: v as DateBoxConfig['source'], fixedDate: v === 'fixed' && !cfg.fixedDate ? isoDay(todayUtc()) : cfg.fixedDate })}
+          options={[
+            { value: 'today', label: 'Generation day' },
+            { value: 'fixed', label: 'Fixed date' },
+            { value: 'column', label: 'From spreadsheet' },
+          ]}
+        />
+      </Field>
+      {cfg.source === 'today' && <p className="text-xs text-slate-500">Prints the day the client generates the certificates.</p>}
+      {cfg.source === 'fixed' && (
+        <Field label="Date" htmlFor="bp-date-fixed">
+          <Input id="bp-date-fixed" type="date" value={cfg.fixedDate} onChange={(e) => upd({ fixedDate: e.target.value })} className="h-9" />
+        </Field>
+      )}
+      {cfg.source === 'column' && (
+        <p className="text-xs text-slate-500">
+          Each certificate uses its own date from the participant list. Clients match a column to <code className="rounded bg-slate-100 px-1 font-mono">{`{{${dateColumnKey(box)}}}`}</code>, e.g. "Date" or "Completion date".
+        </p>
+      )}
+      <Field label="Format" htmlFor="bp-date-format">
+        <Select id="bp-date-format" value={cfg.format} onChange={(e) => upd({ format: e.target.value })}>
+          {DATE_BOX_FORMATS.map((f) => (
+            <option key={f.value} value={f.value}>
+              {formatDate(todayUtc(), f.value)}
+            </option>
+          ))}
+        </Select>
+      </Field>
+      <Field label="Text before the date" htmlFor="bp-date-prefix" optional hint={`Printed as: ${cfg.prefix}${sample}`}>
+        <Input id="bp-date-prefix" value={cfg.prefix} maxLength={60} placeholder="e.g. Date: or Awarded on " onChange={(e) => upd({ prefix: e.target.value })} />
+      </Field>
+      <Toggle checked={cfg.clientEditable} onChange={(v) => upd({ clientEditable: v })} label="Clients can change the date" description="Lets clients pick another date, format or spreadsheet column for their batch." />
+    </Section>
+  );
+}

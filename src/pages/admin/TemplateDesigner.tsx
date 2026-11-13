@@ -25,12 +25,13 @@ import {
   Users,
   Copy,
   Archive,
+  CalendarDays,
 } from 'lucide-react';
 import { api, fetchFile, getConfig, type AppConfig } from '../../lib/api';
 import { setNavigationBlocker, useRouter } from '../../lib/router';
 import { Alert, Badge, Button, Field, IconButton, Input, Menu, Modal, Segmented, Spinner, Textarea, Toggle, cx, useConfirm } from '../../components/ui';
 import { useToast } from '../../context/ToastContext';
-import { checkReferenceAlignment, newBox, publishProblems, sanitizeLayout, signatureOrder, uniqueKey } from '../../../shared/layout';
+import { checkReferenceAlignment, newBox, newDateBox, publishProblems, sanitizeLayout, signatureOrder, uniqueKey } from '../../../shared/layout';
 import type { BoxType, TemplateBox, TemplateDetail, TemplateLayout, TemplateVersion } from '../../../shared/types';
 import { BOX_STYLE, DesignCanvas, type Rect, type Tool } from './designer/DesignCanvas';
 import { BoxProperties, FontManager, Section } from './designer/BoxProperties';
@@ -42,9 +43,12 @@ import { CertificateRenderer } from '../../engine/renderer';
 import { renderPdfPage } from '../../engine/pdfRaster';
 import { formatDateTime } from '../../lib/format';
 
-const TOOLS: { tool: Tool; label: string; icon: React.ReactNode; key: string }[] = [
+type DesignerTool = Tool | 'date';
+
+const TOOLS: { tool: DesignerTool; label: string; icon: React.ReactNode; key: string }[] = [
   { tool: 'select', label: 'Select & move', icon: <MousePointer2 className="h-4 w-4" />, key: 'V' },
   { tool: 'text', label: 'Text box', icon: <Type className="h-4 w-4" />, key: 'T' },
+  { tool: 'date', label: 'Date box', icon: <CalendarDays className="h-4 w-4" />, key: 'D' },
   { tool: 'qr', label: 'QR code box', icon: <QrCode className="h-4 w-4" />, key: 'Q' },
   { tool: 'photo', label: 'Photo box', icon: <ImageIcon className="h-4 w-4" />, key: 'P' },
   { tool: 'signature', label: 'Signature box', icon: <PenLine className="h-4 w-4" />, key: 'S' },
@@ -69,7 +73,7 @@ export default function TemplateDesigner({ id }: { id: string }) {
   const [saving, setSaving] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [tool, setTool] = useState<Tool>('select');
+  const [tool, setTool] = useState<DesignerTool>('select');
   const [page, setPage] = useState(0);
   const [zoom, setZoom] = useState<number | 'fit'>('fit');
   const [fitScale, setFitScale] = useState(1);
@@ -179,12 +183,12 @@ export default function TemplateDesigner({ id }: { id: string }) {
       if (!layout) return;
       const id = uid();
       const taken = new Set(layout.boxes.map((b) => b.key));
-      const box = newBox(type, id, { page, ...rect }, taken);
+      const box = tool === 'date' && type === 'text' ? newDateBox(id, { page, ...rect }, taken) : newBox(type, id, { page, ...rect }, taken);
       update((l) => ({ ...l, boxes: [...l.boxes, box] }));
       setSelectedId(id);
       setTool('select');
     },
-    [layout, page, update]
+    [layout, page, update, tool]
   );
 
   const deleteBox = useCallback(
@@ -537,7 +541,7 @@ export default function TemplateDesigner({ id }: { id: string }) {
                       onClick={() => setSelectedId(b.id)}
                       className={cx('flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm', b.id === selectedId ? 'bg-slate-100 font-medium text-slate-900' : 'text-slate-600 hover:bg-slate-50')}
                     >
-                      <span className={cx('flex h-5 w-5 shrink-0 items-center justify-center rounded text-white', BOX_STYLE[b.type].chip)}>{BOX_STYLE[b.type].icon}</span>
+                      <span className={cx('flex h-5 w-5 shrink-0 items-center justify-center rounded text-white', b.type === 'text' && b.date ? 'bg-teal-600' : BOX_STYLE[b.type].chip)}>{b.type === 'text' && b.date ? <CalendarDays className="h-3 w-3" /> : BOX_STYLE[b.type].icon}</span>
                       <span className="truncate">
                         {b.type === 'signature' ? `${sigNumbers.get(b.id)}. ` : ''}
                         {b.label}
@@ -569,7 +573,7 @@ export default function TemplateDesigner({ id }: { id: string }) {
               page={page}
               zoom={zoom}
               onFitScale={setFitScale}
-              tool={archived ? 'select' : tool}
+              tool={archived ? 'select' : tool === 'date' ? 'text' : tool}
               selectedId={selectedId}
               onSelect={setSelectedId}
               onCreate={createBox}
