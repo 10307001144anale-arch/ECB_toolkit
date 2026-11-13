@@ -1,11 +1,11 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Archive, Copy, Eye, FileStack, FileText, History, MoreHorizontal, Trash2 } from 'lucide-react';
+import { Archive, Copy, Eye, FileStack, FileText, History, MoreHorizontal, Pencil, Trash2 } from 'lucide-react';
 import { api } from '../../lib/api';
 import { useRouter } from '../../lib/router';
 import { Badge, Button, Card, EmptyState, IconButton, Menu, Modal, PageHeader, Spinner, useConfirm } from '../../components/ui';
 import { useToast } from '../../context/ToastContext';
 import type { BatchRecord } from '../../../shared/types';
-import { allLocalBatches, deleteLocalBatch, RETENTION_DAYS } from '../../engine/localStore';
+import { allLocalBatches, allSessionIds, deleteLocalBatch, RETENTION_DAYS } from '../../engine/localStore';
 import { downloadBlob, downloadCombinedFromStored, downloadZip, safeFileBase } from '../../engine/generate';
 import { formatDateOnly, formatDateTime } from '../../lib/format';
 import { BatchStatusBadge } from '../admin/ActivityPage';
@@ -20,12 +20,16 @@ export default function HistoryPage() {
   const [busy, setBusy] = useState<string | null>(null);
   const [filesFor, setFilesFor] = useState<string | null>(null);
   const [details, setDetails] = useState<BatchRecord | null>(null);
+  const [sessions, setSessions] = useState<Set<string>>(new Set());
 
   const load = useCallback(async () => {
     try {
       const [b, l] = await Promise.all([api.get<BatchRecord[]>('/api/client/batches'), allLocalBatches().catch(() => [])]);
       setBatches(b);
-      setLocal(new Map(l.filter((x) => x.expiresAt > Date.now()).map((x) => [x.batchId, x])));
+      const live = l.filter((x) => x.expiresAt > Date.now());
+      setLocal(new Map(live.map((x) => [x.batchId, x])));
+      const ids = await allSessionIds().catch(() => new Set<string>());
+      setSessions(new Set([...ids].filter((id) => live.some((x) => x.batchId === id))));
     } catch (e: any) {
       showToast(e.message, 'error');
     }
@@ -109,6 +113,11 @@ export default function HistoryPage() {
                             <Button size="sm" icon={<FileText className="h-3.5 w-3.5" />} onClick={() => setFilesFor(b.id)}>
                               Files
                             </Button>
+                            {sessions.has(b.id) && (
+                              <Button size="sm" variant="primary" icon={<Pencil className="h-3.5 w-3.5" />} onClick={() => navigate(`/app/new?edit=${b.id}`)}>
+                                Edit
+                              </Button>
+                            )}
                             <p className="w-full text-xs text-slate-400">Deleted after {formatDateOnly(l.expiresAt)}</p>
                           </div>
                         ) : (
@@ -124,14 +133,19 @@ export default function HistoryPage() {
                           )}
                           items={[
                             { label: 'View details', icon: <Eye className="h-4 w-4" />, onClick: () => setDetails(b) },
+                            {
+                              label: sessions.has(b.id) ? 'Edit and generate again' : 'Edit wording (add participants again)',
+                              icon: <Pencil className="h-4 w-4" />,
+                              onClick: () => navigate(`/app/new?edit=${b.id}`),
+                            },
                             { label: 'Duplicate as new batch', icon: <Copy className="h-4 w-4" />, onClick: () => navigate(`/app/new?from=${b.id}`) },
                             {
-                              label: 'Delete files from this device',
+                              label: 'Delete files and saved data from this device',
                               icon: <Trash2 className="h-4 w-4" />,
                               danger: true,
                               disabled: !l,
                               onClick: async () => {
-                                if (!(await confirm({ title: 'Delete stored PDFs?', message: 'The generated PDFs are removed from this browser. The batch record and certificate verification stay.', confirmLabel: 'Delete', danger: true }))) return;
+                                if (!(await confirm({ title: 'Delete stored PDFs?', message: 'The generated PDFs and the saved participant data are removed from this browser. You will no longer be able to edit this batch. The batch record and certificate verification stay.', confirmLabel: 'Delete', danger: true }))) return;
                                 await deleteLocalBatch(b.id);
                                 load();
                               },
@@ -147,7 +161,7 @@ export default function HistoryPage() {
           </div>
         </Card>
       )}
-      {filesFor && <FilesModal batchId={filesFor} onClose={() => setFilesFor(null)} />}
+      {filesFor && <FilesModal batchId={filesFor} onClose={() => setFilesFor(null)} onEdit={sessions.has(filesFor) ? (pos) => navigate(`/app/new?edit=${filesFor}&pos=${pos}`) : undefined} />}
       {details && <BatchDetails batch={details} onClose={() => setDetails(null)} />}
     </>
   );

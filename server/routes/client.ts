@@ -254,6 +254,23 @@ clientRouter.post(
   })
 );
 
+/**
+ * Marks the certificates of an earlier batch as replaced (void) after the
+ * client generated a corrected version. Their QR codes then show "not valid".
+ */
+clientRouter.post(
+  '/batches/:id/replace',
+  h(async (req: AuthedRequest, res) => {
+    const old = ownBatch(req, req.params.id);
+    const by = ownBatch(req, String(req.body?.replacementId || ''));
+    if (by.id === old.id) throw new HttpError(400, 'A batch cannot replace itself.');
+    if (!['completed', 'partial', 'cancelled'].includes(by.status) || by.success === 0) throw new HttpError(409, 'The new batch has no generated certificates yet.');
+    const r = db.prepare("UPDATE certificates SET status = 'void' WHERE batch_id = ? AND status = 'valid'").run(old.id);
+    logActivity(req.user!.id, 'batch_replaced', `${old.name} replaced by ${by.name} (${r.changes} certificates voided)`);
+    res.json({ voided: r.changes });
+  })
+);
+
 /** Records the outcome. Successful rows become valid certificates; failed or skipped rows are voided. */
 clientRouter.post(
   '/batches/:id/complete',

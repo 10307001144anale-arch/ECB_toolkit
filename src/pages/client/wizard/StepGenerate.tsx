@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Archive, BookmarkPlus, CheckCircle2, Download, FileStack, FileText, History, PlayCircle, RotateCcw, XCircle } from 'lucide-react';
+import { Pencil, Archive, BookmarkPlus, CheckCircle2, Download, FileStack, FileText, History, PlayCircle, RotateCcw, XCircle } from 'lucide-react';
 import { api } from '../../../lib/api';
 import { useRouter } from '../../../lib/router';
 import { Alert, Button, Card, Field, Input, Modal, ProgressBar, cx } from '../../../components/ui';
@@ -7,7 +7,7 @@ import { useToast } from '../../../context/ToastContext';
 import type { BatchRecord, ContentPreset } from '../../../../shared/types';
 import { makeFileNames, resolveCertificate } from '../../../engine/batch';
 import { downloadBlob, downloadZip, runGeneration, safeFileBase, type GenerationProgress, type GenerationResult } from '../../../engine/generate';
-import { listOutputs, RETENTION_DAYS } from '../../../engine/localStore';
+import { listOutputs, RETENTION_DAYS, saveBatchSession } from '../../../engine/localStore';
 import { clearPreparedImages } from '../../../engine/images';
 import { formatDuration } from '../../../lib/format';
 import type { StepProps } from './state';
@@ -30,6 +30,7 @@ export function StepGenerate({ w, d, set, onNewBatch }: StepProps & { onNewBatch
   const [dl, setDl] = useState<string | null>(null);
   const [filesOpen, setFilesOpen] = useState(false);
   const [presetOpen, setPresetOpen] = useState(false);
+  const [replaceOld, setReplaceOld] = useState(true);
   const signal = useRef({ cancelled: false });
   const renderer = w.renderer!;
   const ctx = d.ctx!;
@@ -64,6 +65,16 @@ export function StepGenerate({ w, d, set, onNewBatch }: StepProps & { onNewBatch
         recipients,
       });
       set({ generatedBatchId: created.batch.id, batchName: name.trim() });
+      // Keep the working data in this browser so the batch can be edited and generated again from History.
+      await saveBatchSession({
+        batchId: created.batch.id,
+        savedAt: Date.now(),
+        data: w.data!,
+        excluded: [...w.excluded],
+        crops: w.crops,
+        images: w.images.entries.map((e) => ({ name: e.name, blob: e.blob, size: e.size })),
+        rowIndices,
+      }).catch(() => {});
       const fileNames = makeFileNames(rows, rowIndices, w.mapping.recipientColumn);
       setProgress({ total: rowIndices.length, done: 0, succeeded: 0, failed: 0, etaSeconds: null, ratePerSecond: null });
       const result = await runGeneration(
@@ -77,6 +88,14 @@ export function StepGenerate({ w, d, set, onNewBatch }: StepProps & { onNewBatch
         cancelled: result.cancelled,
       });
       setOutcome({ batch, result, rowIndices, certificateIds: created.certificateIds });
+      if (w.editingFrom && replaceOld && result.successPositions.length > 0) {
+        try {
+          const r = await api.post<{ voided: number }>(`/api/client/batches/${w.editingFrom.id}/replace`, { replacementId: batch.id });
+          showToast(`${r.voided} certificate${r.voided === 1 ? '' : 's'} from “${w.editingFrom.name}” marked as replaced`, 'info');
+        } catch (e: any) {
+          showToast(`Could not mark the old certificates as replaced: ${e.message}`, 'error');
+        }
+      }
       if (result.cancelled) showToast(`Stopped. ${result.successPositions.length} certificates were completed and kept.`, 'info');
       else if (result.failures.length) showToast(`${result.successPositions.length} generated, ${result.failures.length} failed`, 'error');
       else showToast(`${result.successPositions.length} certificates generated`, 'success');
@@ -148,6 +167,15 @@ export function StepGenerate({ w, d, set, onNewBatch }: StepProps & { onNewBatch
           <Field label="Batch name" htmlFor="batch-name" className="mt-5" hint="Shown in your history and on the verification page.">
             <Input id="batch-name" value={name} onChange={(e) => setName(e.target.value)} maxLength={120} />
           </Field>
+          {w.editingFrom && (
+            <label className="mt-4 flex items-start gap-3 rounded-lg border border-slate-200 p-3 text-sm">
+              <input type="checkbox" className="mt-0.5 h-4 w-4 rounded border-slate-300" checked={replaceOld} onChange={(e) => setReplaceOld(e.target.checked)} />
+              <span>
+                <b>Replace “{w.editingFrom.name}”</b>
+                <span className="block text-xs text-slate-500">The old certificates' QR codes and IDs will show “no longer valid”. The new certificates get new IDs. Untick to keep both valid.</span>
+              </span>
+            </label>
+          )}
           {error && (
             <Alert tone="error" className="mt-4">
               {error}
@@ -286,7 +314,7 @@ function DownloadCard({ icon, title, description, onClick, busy }: { icon: React
   );
 }
 
-export function FilesModal({ batchId, onClose }: { batchId: string; onClose: () => void }) {
+export function FilesModal({ batchId, onClose, onEdit }: { batchId: string; onClose: () => void; onEdit?: (position: number) => void }) {
   const [files, setFiles] = useState<Awaited<ReturnType<typeof listOutputs>> | null>(null);
   const [q, setQ] = useState('');
   useEffect(() => {
@@ -304,7 +332,12 @@ export function FilesModal({ batchId, onClose }: { batchId: string; onClose: () 
         <ul className="max-h-[55vh] divide-y divide-slate-100 overflow-y-auto rounded-lg border border-slate-200">
           {shown.slice(0, 500).map((f) => (
             <li key={f.id} className="flex items-center justify-between gap-3 px-3 py-2 text-sm">
-              <span className="truncate">{f.fileName}</span>
+              <span className="min-w-0 flex-1 truncate">{f.fileName}</span>
+              {onEdit && (
+                <Button size="sm" variant="ghost" icon={<Pencil className="h-4 w-4" />} onClick={() => onEdit(f.index)}>
+                  Edit
+                </Button>
+              )}
               <Button size="sm" variant="ghost" icon={<Download className="h-4 w-4" />} onClick={() => downloadBlob(f.blob, f.fileName)}>
                 Download
               </Button>

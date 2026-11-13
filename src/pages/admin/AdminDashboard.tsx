@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Award, FileCheck2, FilePen, Plus, Users } from 'lucide-react';
 import { api } from '../../lib/api';
 import { Link, useRouter } from '../../lib/router';
-import { Button, Card, EmptyState, PageHeader, Spinner, StatTile } from '../../components/ui';
+import { Alert, Button, Card, EmptyState, PageHeader, Spinner, StatTile } from '../../components/ui';
 import { ACTIVITY_LABELS, timeAgo } from '../../lib/format';
 import type { ActivityItem } from '../../../shared/types';
 import { NewTemplateModal } from './TemplatesPage';
@@ -17,6 +17,7 @@ interface Stats {
   certificates: number;
   batches: number;
   frequentTemplates: { id: string; title: string; batches: number; certificates: number }[];
+  storage?: { persistent: boolean; dataDir: string };
 }
 
 export default function AdminDashboard() {
@@ -47,13 +48,19 @@ export default function AdminDashboard() {
         }
       />
       {error && <p className="text-sm text-red-600">{error}</p>}
+      {stats?.storage && !stats.storage.persistent && (
+        <Alert tone="error" className="mb-5" title="Templates are not stored permanently">
+          The server is saving data in <code>{stats.storage.dataDir}</code>, which is wiped on every restart or redeploy, so published templates would disappear. On Render, add a
+          persistent disk mounted at <code>/var/data</code> and set <code>DATA_DIR=/var/data</code>.
+        </Alert>
+      )}
       {!stats ? (
         !error && <Spinner />
       ) : (
         <>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <StatTile label="Templates" value={stats.templates} hint={`${stats.drafts} draft · ${stats.archived} archived`} icon={<FilePen className="h-5 w-5" />} />
-            <StatTile label="Published" value={stats.published} hint="Public in the certificate generator" icon={<FileCheck2 className="h-5 w-5" />} />
+            <StatTile label="Published" value={stats.published} hint="Visible to everyone with the link" icon={<FileCheck2 className="h-5 w-5" />} />
             <StatTile label="Batches" value={stats.batches.toLocaleString()} hint="Generation runs" icon={<Users className="h-5 w-5" />} />
             <StatTile label="Certificates generated" value={stats.certificates.toLocaleString()} hint="Valid certificates issued" icon={<Award className="h-5 w-5" />} />
           </div>

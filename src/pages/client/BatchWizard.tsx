@@ -11,6 +11,8 @@ import type { BatchRecord, ClientTemplate, ContentPreset } from '../../../shared
 import { CertificateRenderer } from '../../engine/renderer';
 import { analysePlaceholders, autoMapping, contentIssues, fitContentToLayout, registeredNames, validateRows, type BatchContext } from '../../engine/batch';
 import { initialState, type Derived, type StepId, type WizardState } from './wizard/state';
+import { getBatchSession } from '../../engine/localStore';
+import { ImageLibrary } from '../../engine/images';
 import { StepDesign } from './wizard/StepDesign';
 import { StepData } from './wizard/StepData';
 import { StepPreview } from './wizard/StepPreview';
@@ -69,7 +71,35 @@ export default function BatchWizard() {
   useEffect(() => {
     (async () => {
       try {
+        const edit = query.get('edit');
         const from = query.get('from');
+        if (edit) {
+          const { batch } = await api.get<{ batch: BatchRecord }>(`/api/client/batches/${edit}`);
+          const t = await api.get<ClientTemplate>(`/api/client/templates/${batch.templateId}`);
+          const session = await getBatchSession(edit).catch(() => undefined);
+          await chooseTemplate(t, { content: batch.content, mapping: batch.mapping, name: `${batch.name} (edited)` });
+          if (t.versionId !== batch.templateVersionId) showToast('The template has been updated since this batch. Check the result before generating.', 'info');
+          if (session) {
+            const pos = Number(query.get('pos'));
+            const focusRow = Number.isInteger(pos) && session.rowIndices[pos] !== undefined ? session.rowIndices[pos] : null;
+            set({
+              data: session.data,
+              images: new ImageLibrary(session.images),
+              imagesVersion: 1,
+              crops: session.crops || {},
+              excluded: new Set(session.excluded || []),
+              editingFrom: { id: batch.id, name: batch.name },
+              focusRow,
+            });
+            setStep('generate');
+          } else {
+            set({ editingFrom: { id: batch.id, name: batch.name } });
+            showToast('The participant list is no longer stored in this browser. Add it again to regenerate.', 'info');
+            setStep('data');
+          }
+          return;
+        }
+
         const presetId = query.get('preset');
         let templateId = query.get('template');
         if (from) {
@@ -222,9 +252,9 @@ export default function BatchWizard() {
   return (
     <>
       <PageHeader
-        title="New certificate batch"
+        title={w.editingFrom ? 'Edit certificates' : 'New certificate batch'}
         description={w.template ? `${w.template.title} · version ${w.template.versionNumber}` : 'Follow the steps to create personalised certificates.'}
-        breadcrumbs={[{ label: 'Home', to: '/app' }, { label: 'New batch' }]}
+        breadcrumbs={[{ label: 'Home', to: '/app' }, ...(w.editingFrom ? [{ label: 'History', to: '/app/history' }, { label: 'Edit' }] : [{ label: 'New batch' }])]}
       />
 
       {/* Stepper */}
@@ -274,7 +304,7 @@ export default function BatchWizard() {
           <StepGenerate
             {...props}
             onNewBatch={() => {
-              set({ data: null, excluded: new Set(), overflow: new Map(), overflowChecked: false, generatedBatchId: null, confirmSkipErrors: false, batchName: '', crops: {} });
+              set({ data: null, excluded: new Set(), overflow: new Map(), overflowChecked: false, generatedBatchId: null, confirmSkipErrors: false, batchName: '', crops: {}, editingFrom: null, focusRow: null });
               setStep('data');
             }}
           />

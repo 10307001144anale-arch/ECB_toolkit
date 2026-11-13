@@ -14,11 +14,12 @@ export function StatusBadge({ t }: { t: Pick<TemplateSummary, 'status' | 'hasUnp
   if (t.status === 'published')
     return (
       <span className="inline-flex items-center gap-1.5">
-        <Badge tone="green">Published v{t.currentVersionNumber}</Badge>
-        {t.hasUnpublishedChanges && <Badge tone="amber">Unpublished changes</Badge>}
+        <Badge tone="green">Public · v{t.currentVersionNumber}</Badge>
+        {t.hasUnpublishedChanges && <Badge tone="amber">Changes not published yet</Badge>}
       </span>
     );
-  return <Badge tone="blue">Draft{t.currentVersionNumber ? ` (v${t.currentVersionNumber} unpublished)` : ''}</Badge>;
+  if (t.currentVersionNumber) return <Badge tone="amber">Hidden from clients</Badge>;
+  return <Badge tone="blue">Draft — not published</Badge>;
 }
 
 export default function TemplatesPage() {
@@ -64,13 +65,13 @@ export default function TemplatesPage() {
         await api.post(`/api/admin/templates/${t.id}/archive`);
         showToast('Template archived', 'success');
       } else if (action === 'unpublish') {
-        const ok = await confirm({ title: 'Unpublish template?', message: 'It will be hidden from the certificate generator. Existing certificates are not affected.', confirmLabel: 'Unpublish' });
+        const ok = await confirm({ title: 'Hide this template?', message: 'Visitors will no longer see it in the certificate generator until you publish it again. Existing certificates stay valid.', confirmLabel: 'Hide' });
         if (!ok) return;
         await api.post(`/api/admin/templates/${t.id}/unpublish`);
-        showToast('Template unpublished', 'success');
+        showToast('Template hidden from clients', 'success');
       } else if (action === 'republish') {
         await api.post(`/api/admin/templates/${t.id}/publish`);
-        showToast('Template published', 'success');
+        showToast('Template published — visible to everyone with the link', 'success');
       } else if (action === 'unarchive') {
         await api.post(`/api/admin/templates/${t.id}/unarchive`);
         showToast('Template restored as draft', 'success');
@@ -153,9 +154,9 @@ export default function TemplatesPage() {
                       { label: 'Edit design', icon: <Pencil className="h-4 w-4" />, onClick: () => navigate(`/admin/templates/${t.id}`), disabled: t.status === 'archived' },
                       { label: 'Duplicate', icon: <Copy className="h-4 w-4" />, onClick: () => act(t, 'duplicate') },
                       ...(t.status === 'published'
-                        ? [{ label: 'Unpublish', icon: <EyeOff className="h-4 w-4" />, onClick: () => act(t, 'unpublish') }]
+                        ? [{ label: 'Hide from clients', icon: <EyeOff className="h-4 w-4" />, onClick: () => act(t, 'unpublish') }]
                         : t.status === 'draft' && t.currentVersionId
-                          ? [{ label: `Publish v${t.currentVersionNumber} again`, icon: <Eye className="h-4 w-4" />, onClick: () => act(t, 'republish') }]
+                          ? [{ label: `Show to clients again (v${t.currentVersionNumber})`, icon: <Eye className="h-4 w-4" />, onClick: () => act(t, 'republish') }]
                           : []),
                       'divider' as const,
                       t.status === 'archived'

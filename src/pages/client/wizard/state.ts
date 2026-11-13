@@ -27,6 +27,10 @@ export interface WizardState {
   confirmSkipErrors: boolean;
   /** Set once a batch has been generated, to stop accidental re-generation. */
   generatedBatchId: string | null;
+  /** The earlier batch being edited from History (its certificates can be marked as replaced). */
+  editingFrom: { id: string; name: string } | null;
+  /** Participant to show first on the preview step. */
+  focusRow: number | null;
 }
 
 export function initialState(): WizardState {
@@ -47,6 +51,8 @@ export function initialState(): WizardState {
     batchName: '',
     confirmSkipErrors: false,
     generatedBatchId: null,
+    editingFrom: null,
+    focusRow: null,
   };
 }
 

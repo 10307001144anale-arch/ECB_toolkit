@@ -14,8 +14,8 @@ type Filter = 'all' | 'issues' | 'excluded';
 export function StepPreview({ w, d, set, goTo }: StepProps) {
   const rows = w.data!.rows;
   const renderer = w.renderer!;
-  const [selected, setSelected] = useState(() => d.readyRows[0] ?? 0);
-  const [filter, setFilter] = useState<Filter>(d.errorRows.length ? 'issues' : 'all');
+  const [selected, setSelected] = useState(() => (w.focusRow !== null && w.focusRow < w.data!.rows.length ? w.focusRow : d.readyRows[0] ?? 0));
+  const [filter, setFilter] = useState<Filter>(d.errorRows.length && w.focusRow === null ? 'issues' : 'all');
   const [q, setQ] = useState('');
   const [limit, setLimit] = useState(200);
   const [editing, setEditing] = useState<number | null>(null);

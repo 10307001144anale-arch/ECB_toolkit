@@ -78,6 +78,8 @@ Data (the SQLite database and uploaded template files) is stored in `DATA_DIR` (
    - **Signatures**: draw with mouse, finger or stylus (thickness, colour, undo/redo, clear) or upload PNG / JPG / JPEG / WebP. Empty margins are trimmed, transparency is kept (white paper of JPG scans is made transparent), and the signature can be resized and moved inside the box with an exact preview. Per-participant signature files via a column are also supported.
 3. **Preview & generate** — every participant is validated (missing values, invalid dates/numbers, duplicate certificate numbers, missing photos, text that does not fit). Navigate participant by participant, see warnings, use the **fix links** (edit row, back to data, back to wording), **Adjust photo** (drag, zoom, rotate, reset to automatic, confirm), exclude rows. Rows with errors are never generated. Generation runs one certificate at a time with progress, ETA and **Cancel**; finished PDFs are saved immediately and processed-image memory is released afterwards. Download a **ZIP**, **one combined PDF** or **individual PDFs**.
 
+**Editing later:** in **History**, click **Edit** on a batch (or **Edit** next to a single certificate under **Files**). The batch reopens with its wording, participants, photos, signatures and crops, at the preview step. Change anything and generate again. The corrected certificates get new IDs; by default the old batch is marked as *replaced*, so its QR codes show “no longer valid”.
+
 There is **no limit on the number of certificates** per batch (only a 50 MB spreadsheet file-size safety limit, and the abuse limit of 30 batches per hour per browser for public visitors).
 
 ### Placeholders
@@ -96,7 +98,7 @@ Each generated certificate gets a unique ID (e.g. `CG-7K3M-9QX2-PL4D`) stored in
 ## Privacy and data handling
 
 - Spreadsheets, photos and signatures are processed **in the browser**. PDFs are generated in the browser.
-- Generated PDFs are stored in the browser's IndexedDB on that device for **7 days** and then deleted automatically. Clients can delete them sooner from **History**.
+- Generated PDFs — and the batch's working data (participant rows, photos, signatures, crops) so it can be **edited and generated again from History** — are stored in the browser's IndexedDB on that device for **7 days** and then deleted automatically. Clients can delete them sooner from **History**. None of this is uploaded.
 - The server stores: accounts, templates, presets (wording), batch records (wording + column mapping snapshot, counts) and, per certificate, the ID, status and — only if the client chooses a column for it — the recipient name shown on the verification page.
 - Microsoft Excel and Google Sheets rows pass through the server to the client's browser and are not stored or logged. Access is read-only.
 - No participant data is ever sent to Google/Gemini. The optional AI box suggestion sends only the blank template image, after the administrator ticks a consent box.

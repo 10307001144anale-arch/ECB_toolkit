@@ -1,6 +1,6 @@
 import express, { Router } from 'express';
 import { createUser, endAllSessionsForUser, hashPassword, passwordProblem, requireRole, toPublicUser, type AuthedRequest } from '../auth.ts';
-import { db, GUEST_ID, logActivity, newId, now, tx } from '../db.ts';
+import { DATA_DIR, db, GUEST_ID, logActivity, newId, now, tx } from '../db.ts';
 import { h, HttpError, isEmail, optionalString, requireString } from '../http.ts';
 import { saveFile, type FileKind } from '../files.ts';
 import { emptyLayout, publishProblems, sanitizeLayout } from '../../shared/layout.ts';
@@ -17,6 +17,17 @@ function mustTemplate(id: string): TemplateRow {
 }
 
 // ------------------------------------------------------------------ dashboard
+
+/**
+ * On Render, only a mounted disk survives restarts and redeploys. If the data
+ * folder is inside the app directory, templates would disappear after the
+ * next deploy — warn the administrator.
+ */
+function storageStatus() {
+  const onRender = !!process.env.RENDER;
+  const inAppDir = DATA_DIR.startsWith(process.cwd());
+  return { persistent: !(onRender && inAppDir), dataDir: DATA_DIR };
+}
 
 adminRouter.get(
   '/stats',
@@ -39,6 +50,7 @@ adminRouter.get(
       certificates: count('SELECT COALESCE(SUM(success),0) n FROM batches'),
       batches: count('SELECT COUNT(*) n FROM batches'),
       frequentTemplates: frequent,
+      storage: storageStatus(),
     });
   })
 );
@@ -219,7 +231,7 @@ adminRouter.post(
     const t = now();
     db.prepare(
       `INSERT INTO templates (id, title, description, status, visibility, draft_json, draft_updated_at, created_by, created_at, updated_at)
-       VALUES (?, ?, ?, 'draft', 'assigned', ?, ?, ?, ?, ?)`
+       VALUES (?, ?, ?, 'draft', 'all', ?, ?, ?, ?, ?)`
     ).run(id, `Copy of ${row.title}`.slice(0, 120), row.description, row.draft_json, t, req.user!.id, t, t);
     logActivity(req.user!.id, 'template_duplicated', row.title);
     res.status(201).json(toDetail(getTemplateRow(id)!));

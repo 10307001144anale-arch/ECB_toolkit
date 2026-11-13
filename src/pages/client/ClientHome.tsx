@@ -16,12 +16,19 @@ export default function ClientHome() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    Promise.all([api.get<ClientTemplate[]>('/api/client/templates'), api.get<BatchRecord[]>('/api/client/batches')])
-      .then(([t, b]) => {
-        setTemplates(t);
-        setBatches(b.slice(0, 5));
-      })
-      .catch((e) => setError(e.message));
+    const load = () =>
+      Promise.all([api.get<ClientTemplate[]>('/api/client/templates'), api.get<BatchRecord[]>('/api/client/batches')])
+        .then(([t, b]) => {
+          setTemplates(t);
+          setBatches(b.slice(0, 5));
+          setError(null);
+        })
+        .catch((e) => setError(e.message));
+    load();
+    // Show newly published (or hidden) templates when the visitor comes back to the tab.
+    const onFocus = () => document.visibilityState === 'visible' && load();
+    document.addEventListener('visibilitychange', onFocus);
+    return () => document.removeEventListener('visibilitychange', onFocus);
   }, []);
 
   return (

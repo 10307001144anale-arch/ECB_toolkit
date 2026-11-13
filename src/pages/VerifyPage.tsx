@@ -92,6 +92,14 @@ export function VerifyPage({ id }: { id: string | null }) {
                     <p className="mt-1 text-sm">It was issued but is no longer valid. Contact the issuer for details.</p>
                   </div>
                 </div>
+              ) : result.status === 'void' ? (
+                <div className="flex gap-3 rounded-xl border border-amber-200 bg-amber-50 p-5 text-amber-900">
+                  <ShieldAlert className="h-6 w-6 shrink-0" />
+                  <div>
+                    <p className="font-semibold">This certificate is no longer valid</p>
+                    <p className="mt-1 text-sm">It was not completed or has been replaced by a corrected certificate. Ask the issuer for the current version.</p>
+                  </div>
+                </div>
               ) : (
                 <div className="flex gap-3 rounded-xl border border-red-200 bg-red-50 p-5 text-red-900">
                   <ShieldX className="h-6 w-6 shrink-0" />

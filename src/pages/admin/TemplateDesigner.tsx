@@ -615,7 +615,7 @@ export default function TemplateDesigner({ id }: { id: string }) {
               const d = await api.post<TemplateDetail>(`/api/admin/templates/${id}/publish`, { notes });
               applyDetail(d);
               setPublishOpen(false);
-              showToast(`Published version ${d.currentVersionNumber}`, 'success');
+              showToast(`Published version ${d.currentVersionNumber} — visible to everyone with the link`, "success");
             } catch (e: any) {
               showToast(e.message, 'error');
             }

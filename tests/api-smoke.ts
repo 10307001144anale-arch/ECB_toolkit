@@ -92,6 +92,14 @@ r = await admin.req('POST', `/api/admin/templates/${tplId}/publish`, {}); assert
 r = await a.req('GET', '/api/client/templates'); assert.equal(r.json.length, 1);
 assert.equal(r.json[0].layout.boxes[0].type, 'text'); ok('published template is public');
 r = await b.req('GET', '/api/client/templates'); assert.equal(r.json.length, 1); ok('every client sees it');
+r = await new Client().req('GET', '/api/client/templates'); assert.equal(r.json.length, 1); ok('a brand-new visitor with only the link sees it');
+r = await admin.req('PUT', `/api/admin/templates/${tplId}`, { title: 'Renamed draft title' }); r = await new Client().req('GET', '/api/client/templates'); assert.equal(r.json.length, 1); ok('saving draft changes keeps the template visible');
+await admin.req('PUT', `/api/admin/templates/${tplId}`, { title: 'Participation' });
+await admin.req('POST', `/api/admin/templates/${tplId}/archive`, {}); r = await new Client().req('GET', '/api/client/templates'); assert.equal(r.json.length, 0); ok('archived template hidden');
+r = await new Client().req('GET', `/api/client/templates/${tplId}`); assert.equal(r.status, 404); ok('archived template cannot be opened by direct link');
+await admin.req('POST', `/api/admin/templates/${tplId}/unarchive`, {}); r = await new Client().req('GET', '/api/client/templates'); assert.equal(r.json.length, 0); ok('restored template stays hidden until published');
+await admin.req('POST', `/api/admin/templates/${tplId}/publish`, {}); r = await new Client().req('GET', '/api/client/templates'); assert.equal(r.json.length, 1); ok('published again → visible again');
+r = await admin.req('GET', '/api/admin/stats'); assert.equal(r.json.storage.persistent, true); ok('storage check reported');
 r = await a.req('GET', `/api/files/${artId}`); assert.equal(r.status, 200); ok('client can download artwork of accessible template');
 r = await admin.req('POST', '/api/admin/files?kind=artwork', undefined, { raw: PNG }); r = await b.req('GET', `/api/files/${r.json.id}`); assert.equal(r.status, 404); ok('files not used by a published template are private');
 r = await new Client().req('GET', `/api/files/${artId}`); assert.equal(r.status, 200); ok('public visitor can load published artwork');
