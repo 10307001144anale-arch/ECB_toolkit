@@ -1,0 +1,706 @@
+import React, { useRef, useState } from 'react';
+import {
+  AlignCenter,
+  AlignLeft,
+  AlignRight,
+  AlignVerticalJustifyCenter,
+  AlignVerticalJustifyEnd,
+  AlignVerticalJustifyStart,
+  CalendarDays,
+  ChevronDown,
+  Copy,
+  Trash2,
+  Upload,
+  X,
+} from 'lucide-react';
+import type { CustomFontRef, PhotoBox, QrBox, SignatureBox, TemplateBox, TemplateLayout, TextBox } from '../../../../shared/types';
+import { defaultCaption, FONT_FAMILIES, makeKey } from '../../../../shared/layout';
+import { DATE_BOX_FORMATS, dateBoxText, dateChoiceFor, dateColumnKey, formatDate, isoDay, todayUtc } from '../../../../shared/dates';
+import type { DateBoxConfig } from '../../../../shared/types';
+import { ALL_FORMATTING, hasFormatting, plainToRich, richToPlain, type FormattingPermissions } from '../../../../shared/rich';
+import { RichTextEditor, type RichEditorHandle } from '../../../components/shared/RichTextEditor';
+import { InsertFieldRow } from './InsertFieldRow';
+import { api, fileUrl } from '../../../lib/api';
+import { Button, Field, IconButton, Input, Segmented, Select, Textarea, Toggle, cx } from '../../../components/shared/ui';
+import { BOX_STYLE } from './boxVisuals';
+import { fmtUnit, unitStep, unitToPt, type Unit } from './units';
+import { useToast } from '../../../context/ToastContext';
+
+function Section({ title, children, defaultOpen = true }: { title: string; children: React.ReactNode; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="border-b border-slate-200">
+      <button type="button" onClick={() => setOpen(!open)} className="flex w-full items-center justify-between px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500 hover:text-slate-800" aria-expanded={open}>
+        {title}
+        <ChevronDown className={cx('h-4 w-4 transition-transform', !open && '-rotate-90')} />
+      </button>
+      {open && <div className="space-y-3 px-4 pb-4">{children}</div>}
+    </div>
+  );
+}
+
+function NumberInput({ value, onChange, min, max, step = 1, suffix, label }: { value: number; onChange: (v: number) => void; min?: number; max?: number; step?: number; suffix?: string; label: string }) {
+  return (
+    <div className="relative">
+      <Input
+        type="number"
+        aria-label={label}
+        value={Number.isFinite(value) ? value : ''}
+        min={min}
+        max={max}
+        step={step}
+        onChange={(e) => {
+          const v = parseFloat(e.target.value);
+          if (Number.isFinite(v)) onChange(v);
+        }}
+        className={cx('h-9', suffix && 'pr-8')}
+      />
+      {suffix && <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-slate-400">{suffix}</span>}
+    </div>
+  );
+}
+
+function ColorInput({ value, onChange, label }: { value: string; onChange: (v: string) => void; label: string }) {
+  const [text, setText] = useState(value);
+  React.useEffect(() => setText(value), [value]);
+  return (
+    <div className="flex items-center gap-2">
+      <input type="color" aria-label={label} value={value} onChange={(e) => onChange(e.target.value)} className="h-9 w-10 cursor-pointer rounded border border-slate-300 bg-white p-0.5" />
+      <Input
+        value={text}
+        aria-label={`${label} hex`}
+        onChange={(e) => {
+          setText(e.target.value);
+          if (/^#[0-9a-fA-F]{6}$/.test(e.target.value)) onChange(e.target.value.toLowerCase());
+        }}
+        className="h-9 font-mono uppercase"
+        maxLength={7}
+      />
+    </div>
+  );
+}
+
+interface Props {
+  box: TemplateBox;
+  layout: TemplateLayout;
+  /** True once the template has been published: keys then stay stable so saved client presets keep matching. */
+  published?: boolean;
+  onChange: (patch: Partial<TemplateBox>, commit?: boolean) => void;
+  onDelete: () => void;
+  onDuplicate: () => void;
+  unit: Unit;
+}
+
+/** X / Y / W / H in the chosen unit, plus rotation. Stored values stay page percentages. */
+function TransformSection({ box, layout, unit, set }: { box: TemplateBox; layout: TemplateLayout; unit: Unit; set: (p: Partial<TemplateBox>) => void }) {
+  const pg = layout.pages[box.page] || layout.pages[0] || { width: 842, height: 595 };
+  const toU = (pct: number, len: number) => Number(fmtUnit((pct / 100) * len, unit));
+  const toPct = (v: number, len: number) => Math.round(((unitToPt(v, unit) / len) * 100) * 100) / 100;
+  const field = (label: string, value: number, apply: (v: number) => void) => (
+    <label className="flex items-center gap-1.5">
+      <span className="w-4 text-xs font-medium text-slate-500">{label}</span>
+      <NumberInput label={label} value={value} step={unitStep(unit)} suffix={unit} onChange={apply} />
+    </label>
+  );
+  return (
+    <Section title="Transform">
+      <div className="grid grid-cols-2 gap-2">
+        {field('X', toU(box.x, pg.width), (v) => set({ x: Math.min(100 - box.w, Math.max(0, toPct(v, pg.width))) }))}
+        {field('Y', toU(box.y, pg.height), (v) => set({ y: Math.min(100 - box.h, Math.max(0, toPct(v, pg.height))) }))}
+        {field('W', toU(box.w, pg.width), (v) => set({ w: Math.min(100 - box.x, Math.max(0.5, toPct(v, pg.width))) }))}
+        {field('H', toU(box.h, pg.height), (v) => set({ h: Math.min(100 - box.y, Math.max(0.5, toPct(v, pg.height))) }))}
+        <label className="col-span-2 flex items-center gap-1.5">
+          <span className="w-4 text-xs font-medium text-slate-500" title="Rotation">∠</span>
+          <NumberInput label="Rotation" value={box.rotation || 0} step={1} min={-180} max={180} suffix="°" onChange={(v) => set({ rotation: Math.max(-180, Math.min(180, Math.round(v * 10) / 10)) })} />
+          {!!box.rotation && (
+            <Button size="sm" variant="ghost" onClick={() => set({ rotation: 0 })}>
+              Reset
+            </Button>
+          )}
+        </label>
+      </div>
+      {layout.pages.length > 1 && (
+        <Field label="Page">
+          <Select value={box.page} onChange={(e) => set({ page: Number(e.target.value) })}>
+            {layout.pages.map((_, i) => (
+              <option key={i} value={i}>
+                Page {i + 1}
+              </option>
+            ))}
+          </Select>
+        </Field>
+      )}
+      <p className="text-[11px] text-slate-500">
+        Page {fmtUnit(pg.width, unit)} × {fmtUnit(pg.height, unit)} {unit}. Arrow keys nudge (Shift = 10×). Drag the round handle to rotate.
+      </p>
+    </Section>
+  );
+}
+
+export function BoxProperties({ box, layout, published, onChange: rawChange, onDelete, onDuplicate, unit }: Props) {
+  const editorRef = useRef<RichEditorHandle>(null);
+  // A Date box's printed wording follows its key (column mode), so keep it in step when the key changes.
+  const onChange: Props['onChange'] = (patch, commit) => {
+    if (box.type === 'text' && box.date && 'key' in patch && patch.key) {
+      const next = { ...box, key: patch.key } as TextBox;
+      patch = { ...patch, defaultText: dateBoxText(next, dateChoiceFor(next, null)) } as Partial<TemplateBox>;
+    }
+    rawChange(patch, commit);
+  };
+  const isDate = box.type === 'text' && !!box.date;
+  const st = isDate ? { ...BOX_STYLE.text, chip: 'bg-teal-600', name: 'Date box', icon: <CalendarDays className="h-3.5 w-3.5" /> } : BOX_STYLE[box.type];
+  const [keyTouched, setKeyTouched] = useState(!!published);
+  const keyClash = layout.boxes.some((b) => b.id !== box.id && b.key === box.key);
+  const keyInvalid = !/^[a-z][a-z0-9_]{0,47}$/.test(box.key);
+  const set = (patch: Partial<TemplateBox>) => onChange(patch, true);
+
+  return (
+    <div className="text-sm">
+      <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+        <div className="flex items-center gap-2">
+          <span className={cx('flex h-6 w-6 items-center justify-center rounded text-white', st.chip)}>{st.icon}</span>
+          <span className="font-semibold text-slate-900">{st.name}</span>
+        </div>
+        <div className="flex">
+          <IconButton label="Duplicate box (Ctrl+D)" onClick={onDuplicate}>
+            <Copy className="h-4 w-4" />
+          </IconButton>
+          <IconButton label="Delete box (Delete)" onClick={onDelete} className="hover:bg-red-50 hover:text-red-600">
+            <Trash2 className="h-4 w-4" />
+          </IconButton>
+        </div>
+      </div>
+
+      <TransformSection box={box} layout={layout} unit={unit} set={set} />
+
+      <Section title="Field">
+        <Field label="Label shown to clients" htmlFor="bp-label">
+          <Input
+            id="bp-label"
+            value={box.label}
+            maxLength={80}
+            onChange={(e) => {
+              const label = e.target.value;
+              const patch: Partial<TemplateBox> = { label };
+              if (!keyTouched && label.trim()) {
+                const k = makeKey(label);
+                if (!layout.boxes.some((b) => b.id !== box.id && b.key === k)) patch.key = k;
+              }
+              onChange(patch, false);
+            }}
+            onBlur={() => onChange({}, true)}
+          />
+        </Field>
+        <Field label="Internal field key" htmlFor="bp-key" error={keyInvalid ? 'Use lower-case letters, numbers and underscores, starting with a letter.' : keyClash ? 'Another box already uses this key.' : null} hint={published ? 'Changing this after publishing disconnects clients\' saved wording for this box.' : 'Identifier only, e.g. recipient_name. Not printed.'}>
+          <Input
+            id="bp-key"
+            value={box.key}
+            maxLength={48}
+            className="font-mono"
+            onChange={(e) => {
+              setKeyTouched(true);
+              onChange({ key: e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '_') }, false);
+            }}
+            onBlur={() => onChange({}, true)}
+          />
+        </Field>
+        <Field label="Help text for clients" htmlFor="bp-desc" optional>
+          <Textarea
+            id="bp-desc"
+            rows={2}
+            value={box.description}
+            maxLength={300}
+            placeholder={box.type === 'text' ? 'e.g. The main message of the certificate' : ''}
+            onChange={(e) => onChange({ description: e.target.value }, false)}
+            onBlur={() => onChange({}, true)}
+          />
+        </Field>
+        <Toggle checked={box.required} onChange={(v) => set({ required: v })} label="Required" description={box.type === 'text' ? 'Clients must fill this box.' : 'Every certificate must include this.'} />
+        {box.type === 'text' && !box.date && (
+          <FormattingPerms box={box} onChange={(formatting) => onChange({ formatting } as Partial<TemplateBox>, true)} />
+        )}
+        {box.type === 'text' && !box.date && (
+          <Field
+            label="Default wording"
+            htmlFor="bp-default"
+            optional
+            hint={'Shown to users as a starting point; they can keep it or rewrite it. Fields like {{name}} are filled from each participant’s data. Leave empty if the user should write it.'}
+          >
+            <div onBlur={() => onChange({}, true)}>
+              <RichTextEditor
+                ref={editorRef}
+                id="bp-default"
+                value={box.defaultRich || plainToRich(box.defaultText)}
+                perms={ALL_FORMATTING}
+                singleLine={!box.multiline}
+                minRows={3}
+                label="Default wording"
+                placeholder="e.g. This certificate is proudly presented to"
+                baseStyle={{ color: box.color, fontWeight: Number(box.fontWeight), fontStyle: box.italic ? 'italic' : undefined }}
+                onChange={(doc) => onChange({ defaultText: richToPlain(doc).slice(0, 5000), defaultRich: hasFormatting(doc) ? doc : null } as Partial<TemplateBox>, false)}
+              />
+              <InsertFieldRow layout={layout} onInsert={(t) => {
+                editorRef.current?.insertField(t);
+                onChange({}, true);
+              }} />
+            </div>
+          </Field>
+        )}
+      </Section>
+
+      {box.type === 'text' && box.date && <DateSection box={box} onChange={(p) => onChange(p as Partial<TemplateBox>, true)} />}
+
+      {box.type === 'text' && <TextSections box={box} fonts={layout.fonts} set={set} />}
+      {box.type === 'qr' && <QrSections box={box} set={set} />}
+      {box.type === 'photo' && <PhotoSections box={box} set={set} />}
+      {box.type === 'signature' && <SignatureSections box={box} set={set} />}
+      {box.type === 'signature' && <SignerSection box={box} fonts={layout.fonts} set={set} />}
+    </div>
+  );
+}
+
+function TextSections({ box, fonts, set }: { box: TextBox; fonts: CustomFontRef[]; set: (p: Partial<TextBox>) => void }) {
+  const families = [...new Set([...FONT_FAMILIES, ...fonts.map((f) => f.family)])];
+  return (
+    <>
+      <Section title="Font">
+        <Field label="Font family">
+          <Select value={box.fontFamily} onChange={(e) => set({ fontFamily: e.target.value })}>
+            {families.map((f) => (
+              <option key={f} value={f}>
+                {f}
+                {fonts.some((x) => x.family === f) ? ' (uploaded)' : ''}
+              </option>
+            ))}
+          </Select>
+        </Field>
+        <div className="flex items-center gap-2">
+          <Segmented
+            size="sm"
+            ariaLabel="Font weight"
+            value={box.fontWeight}
+            onChange={(v) => set({ fontWeight: v })}
+            options={[
+              { value: '400', label: 'Regular' },
+              { value: '700', label: <b>Bold</b> },
+            ]}
+          />
+          <Segmented
+            size="sm"
+            ariaLabel="Font style"
+            value={box.italic ? 'i' : 'n'}
+            onChange={(v) => set({ italic: v === 'i' })}
+            options={[
+              { value: 'n', label: 'Normal' },
+              { value: 'i', label: <i>Italic</i> },
+            ]}
+          />
+        </div>
+        <Field label="Colour">
+          <ColorInput label="Font colour" value={box.color} onChange={(v) => set({ color: v })} />
+        </Field>
+        <Toggle checked={box.autoFit} onChange={(v) => set({ autoFit: v })} label="Fit text automatically" description="Shrinks long wording so it always stays inside the box." />
+        {box.autoFit ? (
+          <div className="grid grid-cols-2 gap-2">
+            <Field label="Maximum size">
+              <NumberInput label="Maximum font size" value={box.maxFontSize} min={4} max={300} step={0.5} suffix="pt" onChange={(v) => set({ maxFontSize: v, minFontSize: Math.min(box.minFontSize, v) })} />
+            </Field>
+            <Field label="Minimum size">
+              <NumberInput label="Minimum font size" value={box.minFontSize} min={4} max={300} step={0.5} suffix="pt" onChange={(v) => set({ minFontSize: Math.min(v, box.maxFontSize) })} />
+            </Field>
+          </div>
+        ) : (
+          <Field label="Font size">
+            <NumberInput label="Font size" value={box.fontSize} min={4} max={300} step={0.5} suffix="pt" onChange={(v) => set({ fontSize: v })} />
+          </Field>
+        )}
+      </Section>
+      <Section title="Alignment">
+        <div className="flex flex-wrap gap-2">
+          <Segmented
+            size="sm"
+            ariaLabel="Horizontal alignment"
+            value={box.align}
+            onChange={(v) => set({ align: v })}
+            options={[
+              { value: 'left', label: <AlignLeft className="h-4 w-4" />, title: 'Align left' },
+              { value: 'center', label: <AlignCenter className="h-4 w-4" />, title: 'Centre' },
+              { value: 'right', label: <AlignRight className="h-4 w-4" />, title: 'Align right' },
+            ]}
+          />
+          <Segmented
+            size="sm"
+            ariaLabel="Vertical alignment"
+            value={box.vAlign}
+            onChange={(v) => set({ vAlign: v })}
+            options={[
+              { value: 'top', label: <AlignVerticalJustifyStart className="h-4 w-4" />, title: 'Top' },
+              { value: 'middle', label: <AlignVerticalJustifyCenter className="h-4 w-4" />, title: 'Middle' },
+              { value: 'bottom', label: <AlignVerticalJustifyEnd className="h-4 w-4" />, title: 'Bottom' },
+            ]}
+          />
+        </div>
+        <Toggle
+          checked={box.wrap}
+          onChange={(v) => set({ wrap: v })}
+          label="Wrap text to the next line"
+          description="When the text reaches the edge of the box it continues on the next line, like in other design tools."
+        />
+      </Section>
+      <Section title="Text options" defaultOpen={false}>
+        <Toggle checked={box.multiline} onChange={(v) => set({ multiline: v })} label="Allow line breaks" description="Clients can press Enter to start a new line." />
+        <Field label="Text case">
+          <Select value={box.transform} onChange={(e) => set({ transform: e.target.value as TextBox['transform'] })}>
+            <option value="none">As typed</option>
+            <option value="uppercase">UPPERCASE</option>
+            <option value="lowercase">lowercase</option>
+            <option value="titlecase">Title Case</option>
+          </Select>
+        </Field>
+        <div className="grid grid-cols-2 gap-2">
+          <Field label="Line spacing">
+            <NumberInput label="Line spacing" value={box.lineHeight} min={0.8} max={3} step={0.05} suffix="×" onChange={(v) => set({ lineHeight: v })} />
+          </Field>
+          <Field label="Letter spacing">
+            <NumberInput label="Letter spacing" value={box.letterSpacing} min={-5} max={50} step={0.1} suffix="pt" onChange={(v) => set({ letterSpacing: v })} />
+          </Field>
+        </div>
+        <Field label="Maximum characters" optional hint="After placeholders are filled in.">
+          <Input type="number" min={1} value={box.maxChars ?? ''} onChange={(e) => set({ maxChars: e.target.value ? Math.max(1, parseInt(e.target.value, 10)) : null })} className="h-9" />
+        </Field>
+      </Section>
+    </>
+  );
+}
+
+function QrSections({ box, set }: { box: QrBox; set: (p: Partial<QrBox>) => void }) {
+  return (
+    <Section title="QR code">
+      <Field label="QR content" hint="Verification links point to this system's public verification page.">
+        <Select value={box.contentMode} onChange={(e) => set({ contentMode: e.target.value as QrBox['contentMode'] })}>
+          <option value="either">Client chooses (verification link or own text/URL)</option>
+          <option value="verification">Always a verification link</option>
+          <option value="client">Client provides text or URL</option>
+        </Select>
+      </Field>
+      <Field label="Error correction" hint="Higher levels survive damage better but make the code denser.">
+        <Select value={box.errorCorrection} onChange={(e) => set({ errorCorrection: e.target.value as QrBox['errorCorrection'] })}>
+          <option value="L">Low (7%)</option>
+          <option value="M">Medium (15%) — recommended</option>
+          <option value="Q">Quartile (25%)</option>
+          <option value="H">High (30%)</option>
+        </Select>
+      </Field>
+      <div className="grid grid-cols-2 gap-2">
+        <Field label="QR size">
+          <NumberInput label="QR size" value={box.sizePercent} min={20} max={100} suffix="%" onChange={(v) => set({ sizePercent: Math.min(100, Math.max(20, v)) })} />
+        </Field>
+        <Field label="Quiet zone">
+          <NumberInput label="Quiet zone" value={box.margin} min={0} max={8} suffix="mod" onChange={(v) => set({ margin: Math.round(Math.min(8, Math.max(0, v))) })} />
+        </Field>
+      </div>
+      <Field label="Code colour">
+        <ColorInput label="QR colour" value={box.fgColor} onChange={(v) => set({ fgColor: v })} />
+      </Field>
+      <Field label="Background">
+        <ColorInput label="QR background" value={box.bgColor} onChange={(v) => set({ bgColor: v })} />
+      </Field>
+    </Section>
+  );
+}
+
+function PhotoSections({ box, set }: { box: PhotoBox; set: (p: Partial<PhotoBox>) => void }) {
+  return (
+    <Section title="Photo">
+      <Field label="Fitting">
+        <Select value={box.fit} onChange={(e) => set({ fit: e.target.value as PhotoBox['fit'] })}>
+          <option value="cover">Fill the box (crop edges)</option>
+          <option value="contain">Fit inside the box (no crop)</option>
+          <option value="stretch">Stretch to the box</option>
+        </Select>
+      </Field>
+      {box.fit !== 'stretch' && (
+        <Field label={box.fit === 'cover' ? 'Keep this part when cropping' : 'Alignment'}>
+          <Select value={box.align} onChange={(e) => set({ align: e.target.value as PhotoBox['align'] })}>
+            <option value="center">Centre</option>
+            <option value="top">Top</option>
+            <option value="bottom">Bottom</option>
+            <option value="left">Left</option>
+            <option value="right">Right</option>
+          </Select>
+        </Field>
+      )}
+      <Field label="Shape">
+        <Segmented
+          size="sm"
+          value={box.shape}
+          onChange={(v) => set({ shape: v })}
+          options={[
+            { value: 'rectangle', label: 'Rectangle' },
+            { value: 'rounded', label: 'Rounded' },
+            { value: 'circle', label: 'Circle' },
+          ]}
+        />
+      </Field>
+      <div className="grid grid-cols-2 gap-2">
+        <Field label="Border">
+          <NumberInput label="Border width" value={box.borderWidth} min={0} max={20} step={0.5} suffix="pt" onChange={(v) => set({ borderWidth: Math.max(0, v) })} />
+        </Field>
+        <Field label="Border colour">
+          <input type="color" aria-label="Border colour" value={box.borderColor} onChange={(e) => set({ borderColor: e.target.value })} className="h-9 w-full cursor-pointer rounded border border-slate-300 p-0.5" />
+        </Field>
+      </div>
+    </Section>
+  );
+}
+
+function SignatureSections({ box, set }: { box: SignatureBox; set: (p: Partial<SignatureBox>) => void }) {
+  const { showToast } = useToast();
+  const [busy, setBusy] = useState(false);
+  const upload = async (f: File | undefined) => {
+    if (!f) return;
+    if (!/\.(png|jpe?g)$/i.test(f.name)) return showToast('Use a PNG (transparent background recommended) or JPG image.', 'error');
+    setBusy(true);
+    try {
+      const r = await api.upload<{ id: string }>(`/api/superadmin/files?kind=signature&name=${encodeURIComponent(f.name)}`, f);
+      set({ fixedSignatureFileId: r.id });
+    } catch (e: any) {
+      showToast(e.message, 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Section title="Signature">
+      <Field label="Who provides the signature?">
+        <Select value={box.source} onChange={(e) => set({ source: e.target.value as SignatureBox['source'] })}>
+          <option value="either">Administrator signature, or client may upload their own</option>
+          <option value="fixed">Always the administrator's signature</option>
+          <option value="client">Client uploads (one for all, or per participant)</option>
+        </Select>
+      </Field>
+      {box.source !== 'client' && (
+        <Field label="Administrator signature" hint="PNG with a transparent background works best.">
+          {box.fixedSignatureFileId ? (
+            <div className="flex items-center gap-2">
+              <div className="checkerboard flex h-16 flex-1 items-center justify-center rounded border border-slate-200">
+                <img src={fileUrl(box.fixedSignatureFileId)} alt="Signature" className="max-h-14 max-w-full object-contain" />
+              </div>
+              <IconButton label="Remove signature" onClick={() => set({ fixedSignatureFileId: null })}>
+                <X className="h-4 w-4" />
+              </IconButton>
+            </div>
+          ) : (
+            <label className="flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-slate-300 px-3 py-3 text-sm text-slate-600 hover:border-slate-400">
+              <Upload className="h-4 w-4" />
+              {busy ? 'Uploading…' : 'Upload signature image'}
+              <input type="file" accept="image/png,image/jpeg" className="sr-only" onChange={(e) => upload(e.target.files?.[0])} />
+            </label>
+          )}
+        </Field>
+      )}
+      <Field label="Fitting">
+        <Segmented
+          size="sm"
+          value={box.fit}
+          onChange={(v) => set({ fit: v })}
+          options={[
+            { value: 'contain', label: 'Keep proportions' },
+            { value: 'stretch', label: 'Stretch' },
+          ]}
+        />
+      </Field>
+      {(box.fit === 'contain' || box.caption?.enabled) && (
+        <Field label="Alignment">
+          <Segmented
+            size="sm"
+            value={box.align}
+            onChange={(v) => set({ align: v })}
+            options={[
+              { value: 'left', label: <AlignLeft className="h-4 w-4" /> },
+              { value: 'center', label: <AlignCenter className="h-4 w-4" /> },
+              { value: 'right', label: <AlignRight className="h-4 w-4" /> },
+            ]}
+          />
+        </Field>
+      )}
+    </Section>
+  );
+}
+
+const PERM_LABELS: [keyof FormattingPermissions, string][] = [
+  ['bold', 'Bold'],
+  ['italic', 'Italic'],
+  ['underline', 'Underline'],
+  ['color', 'Text colour'],
+  ['highlight', 'Highlight'],
+  ['size', 'Text size'],
+  ['align', 'Alignment'],
+];
+
+function FormattingPerms({ box, onChange }: { box: TextBox; onChange: (p: FormattingPermissions) => void }) {
+  const perms = box.formatting || ALL_FORMATTING;
+  return (
+    <Field label="Formatting clients may use" hint="Clients can format selected words (e.g. bold names). Untick anything that should stay as designed.">
+      <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-sm">
+        {PERM_LABELS.map(([k, label]) => (
+          <label key={k} className="flex items-center gap-2">
+            <input type="checkbox" className="h-4 w-4 rounded border-slate-300" checked={perms[k]} onChange={(e) => onChange({ ...perms, [k]: e.target.checked })} />
+            {label}
+          </label>
+        ))}
+      </div>
+    </Field>
+  );
+}
+
+function SignerSection({ box, fonts, set }: { box: SignatureBox; fonts: CustomFontRef[]; set: (p: Partial<SignatureBox>) => void }) {
+  const c = box.caption || defaultCaption();
+  const upd = (p: Partial<SignatureBox['caption']>) => set({ caption: { ...c, ...p } });
+  const families = [...new Set([...FONT_FAMILIES, ...fonts.map((f) => f.family)])];
+  return (
+    <Section title="Signer name">
+      <Toggle
+        checked={c.enabled}
+        onChange={(v) => upd({ enabled: v })}
+        label="Show the signer's name under the signature"
+        description="Prints a signature line, the name of the person signing and (optionally) their title, attached to this box."
+      />
+      {c.enabled && (
+        <>
+          <Field label="Name of the person signing" htmlFor="bp-signer-name">
+            <Input id="bp-signer-name" value={c.name} maxLength={120} placeholder="e.g. Karma Wangchuk" onChange={(e) => upd({ name: e.target.value })} />
+          </Field>
+          <Field label="Title / designation" htmlFor="bp-signer-title" optional>
+            <Input id="bp-signer-title" value={c.title} maxLength={160} placeholder="e.g. Director" onChange={(e) => upd({ title: e.target.value })} />
+          </Field>
+          <Toggle checked={c.clientEditable} onChange={(v) => upd({ clientEditable: v })} label="Clients can change the name and title" description="Useful when the client uploads or draws their own signature." />
+          <Toggle checked={c.showLine} onChange={(v) => upd({ showLine: v })} label="Signature line" />
+          <Field label="Font">
+            <Select value={c.fontFamily} onChange={(e) => upd({ fontFamily: e.target.value })}>
+              {families.map((f) => (
+                <option key={f} value={f}>
+                  {f}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <div className="flex items-end gap-2">
+            <Field label="Name size">
+              <NumberInput label="Signer name size" value={c.fontSize} min={4} max={72} step={0.5} suffix="pt" onChange={(v) => upd({ fontSize: v })} />
+            </Field>
+            <Segmented
+              size="sm"
+              ariaLabel="Signer name weight"
+              value={c.bold ? '700' : '400'}
+              onChange={(v) => upd({ bold: v === '700' })}
+              options={[
+                { value: '400', label: 'Regular' },
+                { value: '700', label: <b>Bold</b> },
+              ]}
+            />
+            <ColorInput label="Signer name colour" value={c.color} onChange={(v) => upd({ color: v })} />
+          </div>
+          <p className="text-xs text-slate-500">The name and title are placed at the bottom of the box and follow the box alignment. Make the box taller to give the signature more room.</p>
+        </>
+      )}
+    </Section>
+  );
+}
+
+export function FontManager({ fonts, onChange }: { fonts: CustomFontRef[]; onChange: (f: CustomFontRef[]) => void }) {
+  const { showToast } = useToast();
+  const [busy, setBusy] = useState(false);
+  const add = async (f: File | undefined) => {
+    if (!f) return;
+    if (!/\.(ttf|otf)$/i.test(f.name)) return showToast('Upload a .ttf or .otf font file.', 'error');
+    setBusy(true);
+    try {
+      const r = await api.upload<{ id: string }>(`/api/superadmin/files?kind=font&name=${encodeURIComponent(f.name)}`, f);
+      const base = f.name.replace(/\.(ttf|otf)$/i, '');
+      const bold = /bold|black|heavy|semibold/i.test(base);
+      const italic = /italic|oblique/i.test(base);
+      const family = base.replace(/[-_ ]?(regular|bold|italic|oblique|semibold|black|heavy|medium|light)+$/gi, '').replace(/[-_]+/g, ' ').trim() || base;
+      onChange([...fonts, { family, fileId: r.id, weight: bold ? '700' : '400', italic }]);
+      showToast(`Font "${family}" added`, 'success');
+    } catch (e: any) {
+      showToast(e.message, 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="space-y-2">
+      {fonts.map((f, i) => (
+        <div key={f.fileId} className="flex items-center gap-2 rounded-lg border border-slate-200 px-2 py-1.5">
+          <Input value={f.family} onChange={(e) => onChange(fonts.map((x, j) => (j === i ? { ...x, family: e.target.value } : x)))} className="h-8 flex-1" aria-label="Font family name" />
+          <span className="text-xs text-slate-500">
+            {f.weight === '700' ? 'Bold' : 'Regular'}
+            {f.italic ? ' italic' : ''}
+          </span>
+          <IconButton label="Remove font" onClick={() => onChange(fonts.filter((_, j) => j !== i))}>
+            <X className="h-4 w-4" />
+          </IconButton>
+        </div>
+      ))}
+      <label className="flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-slate-300 px-3 py-2.5 text-sm text-slate-600 hover:border-slate-400">
+        <Upload className="h-4 w-4" />
+        {busy ? 'Uploading…' : 'Upload font (.ttf / .otf)'}
+        <input type="file" accept=".ttf,.otf" className="sr-only" onChange={(e) => add(e.target.files?.[0])} />
+      </label>
+    </div>
+  );
+}
+
+export { Section, Button };
+
+function DateSection({ box, onChange }: { box: TextBox; onChange: (p: Partial<TextBox>) => void }) {
+  const cfg = box.date!;
+  const upd = (p: Partial<DateBoxConfig>) => {
+    const date = { ...cfg, ...p };
+    const next = { ...box, date };
+    onChange({ date, defaultText: dateBoxText(next, dateChoiceFor(next, null)) });
+  };
+  const sample = formatDate(todayUtc(), cfg.format);
+  return (
+    <Section title="Date">
+      <Field label="Date to print">
+        <Segmented
+          size="sm"
+          ariaLabel="Date source"
+          value={cfg.source}
+          onChange={(v) => upd({ source: v as DateBoxConfig['source'], fixedDate: v === 'fixed' && !cfg.fixedDate ? isoDay(todayUtc()) : cfg.fixedDate })}
+          options={[
+            { value: 'today', label: 'Generation day' },
+            { value: 'fixed', label: 'Fixed date' },
+            { value: 'column', label: 'From spreadsheet' },
+          ]}
+        />
+      </Field>
+      {cfg.source === 'today' && <p className="text-xs text-slate-500">Prints the day the client generates the certificates.</p>}
+      {cfg.source === 'fixed' && (
+        <Field label="Date" htmlFor="bp-date-fixed">
+          <Input id="bp-date-fixed" type="date" value={cfg.fixedDate} onChange={(e) => upd({ fixedDate: e.target.value })} className="h-9" />
+        </Field>
+      )}
+      {cfg.source === 'column' && (
+        <p className="text-xs text-slate-500">
+          Each certificate uses its own date from the participant list. Clients match a column to <code className="rounded bg-slate-100 px-1 font-mono">{`{{${dateColumnKey(box)}}}`}</code>, e.g. "Date" or "Completion date".
+        </p>
+      )}
+      <Field label="Format" htmlFor="bp-date-format">
+        <Select id="bp-date-format" value={cfg.format} onChange={(e) => upd({ format: e.target.value })}>
+          {DATE_BOX_FORMATS.map((f) => (
+            <option key={f.value} value={f.value}>
+              {formatDate(todayUtc(), f.value)}
+            </option>
+          ))}
+        </Select>
+      </Field>
+      <Field label="Text before the date" htmlFor="bp-date-prefix" optional hint={`Printed as: ${cfg.prefix}${sample}`}>
+        <Input id="bp-date-prefix" value={cfg.prefix} maxLength={60} placeholder="e.g. Date: or Awarded on " onChange={(e) => upd({ prefix: e.target.value })} />
+      </Field>
+      <Toggle checked={cfg.clientEditable} onChange={(v) => upd({ clientEditable: v })} label="Clients can change the date" description="Lets clients pick another date, format or spreadsheet column for their batch." />
+    </Section>
+  );
+}

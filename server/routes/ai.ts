@@ -8,7 +8,7 @@ import { logActivity } from '../db.ts';
 import { h, HttpError } from '../http.ts';
 
 export const aiRouter = Router();
-aiRouter.use(requireRole('admin'));
+aiRouter.use(requireRole('superadmin'));
 
 function configured() {
   const k = process.env.GEMINI_API_KEY;

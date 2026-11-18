@@ -40,10 +40,10 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
             key={toast.id}
             className={`pointer-events-auto flex items-start gap-3 p-3.5 rounded-xl border shadow-lg transition-all duration-200 animate-in slide-in-from-bottom-2 ${
               toast.type === 'success'
-                ? 'bg-white dark:bg-slate-900 border-emerald-500/30 text-slate-800 dark:text-slate-100'
+                ? 'bg-white border-emerald-500/30 text-slate-800'
                 : toast.type === 'error'
-                ? 'bg-white dark:bg-slate-900 border-rose-500/30 text-slate-800 dark:text-slate-100'
-                : 'bg-white dark:bg-slate-900 border-indigo-500/30 text-slate-800 dark:text-slate-100'
+                ? 'bg-white border-rose-500/30 text-slate-800'
+                : 'bg-white border-indigo-500/30 text-slate-800'
             }`}
           >
             <div className="mt-0.5 shrink-0">
@@ -54,7 +54,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
             <p className="text-xs font-medium flex-1 leading-relaxed">{toast.message}</p>
             <button
               onClick={() => removeToast(toast.id)}
-              className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+              className="text-slate-400 hover:text-slate-600"
             >
               <X className="w-3.5 h-3.5" />
             </button>

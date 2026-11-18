@@ -1,4 +1,4 @@
-// Creates an administrator (or resets an existing admin's password).
+// Creates a Super Admin (or resets an existing Super Admin's password).
 // Usage: npm run create-admin -- admin@example.org "Full Name"
 // The password is asked for interactively so it never appears in shell history.
 
@@ -36,16 +36,16 @@ if (problem) {
 
 const existing = await db.one('SELECT id, role FROM users WHERE lower(email) = ?', [email.toLowerCase()]);
 if (existing) {
-  if (existing.role !== 'admin') {
-    console.error('That email belongs to a client account. Use a different email.');
+  if (existing.role !== 'superadmin') {
+    console.error('That email belongs to an Admin or User account. Use a different email.');
     process.exit(1);
   }
   await db.run('UPDATE users SET password_hash = ?, active = 1, updated_at = ? WHERE id = ?', [hashPassword(password), Date.now(), existing.id]);
   await db.run('DELETE FROM sessions WHERE user_id = ?', [existing.id]);
-  console.log(`Password reset for administrator ${email}.`);
+  console.log(`Password reset for Super Admin ${email}.`);
 } else {
-  const u = await createUser({ email: email.toLowerCase(), name, password, role: 'admin' });
+  const u = await createUser({ email: email.toLowerCase(), name, password, role: 'superadmin' });
   await logActivity(u.id, 'admin_created_cli', email);
-  console.log(`Administrator ${email} created.`);
+  console.log(`Super Admin ${email} created.`);
 }
 await closeDb();

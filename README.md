@@ -1,30 +1,71 @@
-# CertiGen — template-based bulk certificate generation
+# CertiGen — Certificate Generation Toolkit of the Election Commission of Bhutan
 
-CertiGen has two portals:
+CertiGen has three connected portals, each with its own sign-in page and a role badge in the header:
 
-| Portal | Who | What they control |
+| Portal | Path | Sign in | Badge | Who |
+| --- | --- | --- | --- | --- |
+| **Super Admin** | `/superadmin` | `/superadmin/login` | navy | Owns the certificate templates: upload, field design, testing, publishing |
+| **Admin** | `/admin` | `/admin/login` | orange | Manages Users and their Activities; generates certificates on a User's behalf |
+| **User** | `/` | `/login` | yellow | Picks a published template, writes the wording, adds one participant or a list, and generates |
+
+> **The Super Admin designs and publishes the templates. Admins look after the Users and their Activities. Users (or Admins for them) write the wording and supply the participants. The system generates the certificates.**
+
+All three portals share one data layer (PostgreSQL + Storage). Every signed-in browser keeps a live connection (`/api/events`, Server-Sent Events); after any change the server says *which* data changed (templates, users, activities, batches…) and open pages reload it — a template published by the Super Admin appears in the Admin and User portals without a manual reload.
+
+### Role permissions
+
+| Capability | Super Admin | Admin | User |
+| --- | :---: | :---: | :---: |
+| Upload templates (PDF, PNG, JPG, SVG) | ✅ | — | — |
+| Configure fields, fonts, sizes, colours, alignment (designer) | ✅ | — | — |
+| Rename templates (inline) | ✅ | — | — |
+| Test templates — Single and Bulk, also before publishing (never saved or counted) | ✅ | — | — |
+| Publish / unpublish, version history, restore, archive | ✅ | — | — |
+| Delete templates (confirmation; blocked once certificates exist — archive instead) | ✅ | — | — |
+| Upload or auto-generate the reference template shown to Admins and Users | ✅ | — | — |
+| Create / edit / deactivate **Admin** accounts | ✅ | — | — |
+| Add, edit, delete **Users** (name, organization, contact email, logo, notes, status) | — | ✅ | — |
+| Add, edit, delete **Activities** of each User (name, date, description, status) | — | ✅ | — |
+| Generate certificates for a User (and optionally one of their Activities) | — | ✅ | — |
+| Dashboard: users, activities, published templates, certificates per activity | — | ✅ | — |
+| Generate certificates for themself (Single or Bulk), history, wording presets | — | — | ✅ |
+| Audit log, revoke certificates | ✅ | — | — |
+
+Roles are enforced in the browser's route guards (a signed-in account that opens another portal sees a “this area is for … accounts” page; each role can only sign in on its own sign-in page) **and** in the data layer: `/api/superadmin/*`, `/api/admin/*` (incl. `/api/admin/gen/*`) and `/api/user/*` each accept exactly one role. Only **published** templates can be used by Admins and Users; Admins cannot upload, edit or delete templates; the Super Admin has no User or Activity management.
+
+### Reference template
+
+Wherever Admins and Users see a template (cards, galleries, selection screen) they see the **reference template** — a filled-in sample certificate — never the blank design. The reference is the image the Super Admin uploaded or generated; when publishing a template without one, it is generated automatically from sample data. It also stays visible in a side panel (with the ECB side bands) while entering data. The blank design is only used in the Super Admin editor and for the final PDF.
+
+### Data model
+
+| Table | Fields (main) | Notes |
 | --- | --- | --- |
-| **Admin portal** (`/admin`) | Administrators | Certificate artwork, box positions and styling, publishing, versions, client accounts and access |
-| **Client portal** (`/app`) | Client accounts (created by the administrator) | The certificate **wording** and its formatting, placeholders such as `{{name}}`, participant data, photos and signatures, generation and downloads |
+| `users` | id, name, email (sign-in + contact), role (`superadmin` / `admin` / `user`), organisation, logo_file_id, notes, active (status) | “User” = the former *Client* |
+| `activities` | id, user_id, name, date, description, status (`planned` / `active` / `completed` / `archived`) | Belong to a User |
+| `templates` | id, title (editable), layout (file, fields, guides), reference_image_file_id, status (`draft` / `published` / `archived`), created_by | Published = available to everyone |
+| `batches` (history) | id, client_id (= the User), activity_id (optional), created_by (Admin who generated it, or empty), template, totals, created_at | Test runs are never stored |
+| `certificates` | id, batch_id, status | Verification |
 
-> **The administrator controls the design and layout. The client controls the wording and the participant data. The system generates the certificates.**
+**Migrations** run automatically on start. v3 introduced the three portals; **v4** turns each former *Client* into its Users: Users inherit the client's organisation and logo, every activity moves to a User of its client (other users of the same client get their own copy, with their batches), and batches record which Admin generated them. The old `clients`, `assignments` and `user_clients` tables are kept untouched for reference.
 
-A text box can carry the administrator's **default wording** (with formatting). Clients can keep it or rewrite it and format important words (bold, italic, underline, colour, highlight, size, alignment — the administrator decides which are allowed per box). Client edits never change the template — each batch stores its own copy of the wording.
+The auth layer (`server/auth.ts`, `src/lib/auth.tsx`) is self-contained (sessions in PostgreSQL) so it can be swapped for Supabase Auth or Firebase later without touching the portals.
 
-### Accounts and access
+### ECB brand
 
-- Clients sign in at `/login` with an account the administrator creates under **Clients**.
-- Each template is either **assigned** to selected clients (default for new templates) or open to **all clients** — set under **Templates → ⋯ → Client access**, or per client on the Clients page.
-- Clients only see published templates they have access to, and never the reference certificate.
-- Abuse protection: at most 30 batch starts per hour per account (no limit on the number of certificates).
+- **Colours** (theme tokens in `src/index.css`): White (60%), Naval Abyss `#002F6C` (20%), Joyful Orange `#F68D2E` (10%), Middle Yellow `#FFE900` (5%), neutrals Jet Black / Gray `#3A3A3A` / Mid Gray `#808080` / Light Gray `#E6E6E6`, plus the allowed tints, tones and shades (`navy-tint`, `orange-shade`…). Primary buttons are Naval Abyss, accent buttons Joyful Orange.
+- **Typography**: Roboto for the interface (bundled in `public/fonts`, Apache 2.0), utilities `text-display`, `text-h1`, `text-h2`, `text-h3` follow the ECB scale. Times New Roman for official documents and certificate text (drawn in PDFs with its metric-compatible twin Liberation Serif, because Times New Roman itself may not be redistributed). **DDC Uchen** (bundled) for Dzongkha in the interface, previews and PDFs. All three are in the designer's font list.
+- **Logo**: full-colour ECB logo (`public/brand/ecb-logo.png`) on white or Naval Abyss; the EB submark (`public/brand/eb-submark.png`) for the collapsed sidebar, favicon and small spaces. Header lockup = logo, orange divider, Dzongkha name, “Election Commission of Bhutan”. Logos are never stretched, recoloured or given effects.
+- **ECB ribbon** (`src/components/shared/brand.tsx`): flat navy curve with orange and yellow edges rising left to right — at the bottom of the sign-in screens and as the footer band with the tagline and www.ecb.bt; a small navy/orange/yellow bar divider under page titles; yellow/orange and navy side bands on the reference panel.
+- **Components**: navy sidebar with an orange active marker, white top bar with the role badge, soft shadows only on floating elements; the editor uses a Light Gray canvas, white artboard, Naval Abyss panels and orange handles and guides.
 
 ### Where data lives
 
 | Data | Stored in |
 | --- | --- |
-| Accounts, templates, versions, box configuration, default wording, presets, batch records, certificate IDs and verification status, OAuth tokens (encrypted), activity | **Supabase PostgreSQL** |
-| Blank and reference certificate files, page previews, fonts, admin signatures | **Supabase Storage** (private bucket) — paths recorded in PostgreSQL |
-| Participant spreadsheets, photos, client signatures, generated PDFs | **The client's browser only** (never uploaded) |
+| Accounts (incl. User organisation/notes), activities, templates, versions, field configuration, presets, batch records, certificate IDs and verification status, OAuth tokens (encrypted), audit log | **Supabase PostgreSQL** |
+| Blank and reference certificate files, page previews, reference images, fonts, admin signatures, User logos | **Supabase Storage** (private bucket) — paths recorded in PostgreSQL |
+| Participant spreadsheets, photos, user signatures, generated PDFs | **The user's browser only** (never uploaded) |
 
 ---
 
@@ -38,10 +79,10 @@ A text box can carry the administrator's **default wording** (with formatting). 
 ```bash
 npm install
 cp .env.example .env          # then edit: SUPABASE_*, APP_URL, ADMIN_EMAIL, ADMIN_PASSWORD (APP_SECRET for production)
-npm run dev                   # opens http://localhost:3001/app
+npm run dev                   # opens http://localhost:3001/ (User portal); /admin and /superadmin for the others
 ```
 
-On the first start the administrator in `ADMIN_EMAIL` / `ADMIN_PASSWORD` is created (only when no administrator exists yet). Remove `ADMIN_PASSWORD` from `.env` afterwards. You can also create or reset an administrator at any time:
+On the first start the **Super Admin** in `ADMIN_EMAIL` / `ADMIN_PASSWORD` is created (only when no Super Admin exists yet). Remove `ADMIN_PASSWORD` from `.env` afterwards. Sign in at `/superadmin/login`, then create Admin accounts under **Admin accounts**; Admins create the User accounts. You can also create or reset a Super Admin at any time:
 
 ```bash
 npm run create-admin -- admin@example.org "Full Name"
@@ -60,36 +101,54 @@ On start the server connects to Supabase, creates/updates the database tables (m
 
 ## How it works
 
-### Administrator
+### Super Admin
 
-1. **Templates → New template**: upload **two versions of the same design** (PDF, PNG or JPG, up to 25 MB, up to 10 pages):
-   - **Upload A — complete reference certificate**: the finished example with sample name, wording, photo, signatures and QR code. A locked visual guide only; never printed and never shown to clients.
-   - **Upload B — blank certificate design**: the same design without names, wording, photos, signatures or QR codes. The **only** background used in generated PDFs; stored unchanged.
-   The designer compares their page count, orientation and proportions. If they differ it warns you, offers **calibration** (move/scale the overlay) and blocks publishing until you confirm the alignment.
-   In the designer, switch between **Blank**, **Overlay** (reference over the blank design, adjustable opacity) and **Reference** views while drawing boxes. Boxes are separate overlay objects; the artwork is never modified.
-2. **Designer**: choose a box type (Text, QR code, Photo, Signature) and drag on the artwork to draw it. Move, resize (8 handles), nudge with the arrow keys, duplicate (Ctrl+D), delete, undo/redo (Ctrl+Z / Ctrl+Shift+Z), save (Ctrl+S).
-   - Text boxes: label, internal key, help text, required, font (built-in or uploaded TTF/OTF), weight, italic, colour, automatic fitting between a minimum and maximum size, horizontal and vertical alignment, wrapping, line breaks, text case, line and letter spacing, maximum characters.
-   - QR boxes: content mode (verification link / client text / client chooses), error-correction level, size, quiet zone, colours.
-   - Photo boxes: fill/fit/stretch, crop anchor, rectangle/rounded/circle, border.
-   - Signature boxes: administrator signature, client-provided, or either.
-   - **Preview** renders the real PDF with sample wording; nothing is saved into the template.
-3. **Publish**: creates version 1, 2, 3… Editing a published template changes only its draft; clients keep using the published version until you publish again. Every batch stays linked to the version it was generated with. **Version history** lets you restore an older version into the draft.
-4. Unpublish, archive/restore, duplicate, delete (only when the template has no generation history).
+1. **Templates → New template**: upload **two versions of the same design** (PDF, PNG, JPG or SVG, up to 25 MB, up to 10 pages; SVG drawings are converted to a high-resolution image in the browser):
+   - **Upload A — complete reference certificate**: the finished example. A locked visual guide; never printed.
+   - **Upload B — blank certificate design**: the background of every certificate; stored unchanged.
+2. **Rename** inline: click the template name (or the pencil), press Enter or click away.
+3. **Designer** — a design-tool workspace (see *Template editor*).
+4. **Test** (the *Test* button): a full-screen test view inside the Super Admin portal — no User, Admin or Activity needed, and it works on drafts:
+   - **Single**: a form built from the template's fields with a live preview that updates while typing; *Generate test PDF*.
+   - **Bulk**: upload CSV/Excel, map columns to fields (automatic, adjustable), validation per row, a paginated table and certificate-by-certificate preview, **Download sample CSV** (columns = the template's field keys); generate all valid rows, then download each PDF or a ZIP.
+   - Test files are named `TEST_…`, carry the ID `CG-TEST-0000-0000`, are never saved to any history or count, and are discarded when the view closes.
+5. **Reference template** (template menu): upload an image, generate one from sample data, or reuse Upload A. Publishing generates one automatically when there is none.
+6. **Publish**: creates version 1, 2, 3…; the template immediately appears in the Admin and User portals. Unpublish or archive hides it again.
+7. **Delete**: a confirmation dialog shows the users, batches and certificates linked to the template. Templates with certificates can only be archived (restore any time from *Archived*).
+8. **Admin accounts**: create the Admins.
 
-### Client (guided workflow — 3 steps)
+### Admin
 
-1. **Template & wording** — pick a template assigned to you. The live preview shows a **realistic finished certificate** (example name such as *Karma Dorji*, example photo, signature and QR code; tick *Show field names* to see the placeholders). Every text box opens with the administrator's **suggested wording**; keep it or edit it. Select words and use the toolbar for **bold, italic, underline, colour, highlight, size and alignment** — e.g. bold `{{name}}`, which stays bold after it is replaced with each participant's name. Formatting is stored as structured runs (never HTML) and rendered in the PDF with embedded bold/italic fonts. Use **Insert field** to add placeholders such as `{{name}}`, `{{cid}}`, `{{workshop}}` without typing the syntax (green chips = recognised, red = malformed). Live preview, and **content presets** to save/reuse wording. Editing never changes the template — each batch saves its own copy of the wording.
-2. **Participant data** — one page:
-   - **Upload** `.xlsx`, `.xls` or `.csv`, or import from **Microsoft Excel** (OneDrive/SharePoint) or **Google Sheets**. All sources go through the same import and validation.
-   - **Download Excel template**: the column names are exactly the placeholder keys used in your wording, plus `cid` (always — it is only *printed* if the wording uses `{{cid}}`) and `photo` when the template has a photo box. It contains two sample rows and an *Instructions* sheet.
-   - **Automatic column matching** is shown as a small summary (e.g. *{{name}} ← Full Name*); open it to correct a column, set text/number/date types and date formats, choose the participant-ID column and the name shown on the verification page. There is no separate mapping page.
-   - **Photos**: upload images or a ZIP. A photo is matched by the file name in the `photo` column, or by the participant's CID (e.g. `10701000001.jpg`) — never by upload order. Photos are cropped automatically around the face (browser face detection where available, otherwise a skin-tone/portrait heuristic).
-   - **Signatures**: draw with mouse, finger or stylus (thickness, colour, undo/redo, clear) or upload PNG / JPG / JPEG / WebP. Empty margins are trimmed, transparency is kept (white paper of JPG scans is made transparent), and the signature can be resized and moved inside the box with an exact preview. Per-participant signature files via a column are also supported.
-3. **Preview & generate** — every participant is validated (missing values, invalid dates/numbers, duplicate certificate numbers, missing photos, text that does not fit). Navigate participant by participant, see warnings, use the **fix links** (edit row, back to data, back to wording), **Adjust photo** (drag, zoom, rotate, reset to automatic, confirm), exclude rows. Rows with errors are never generated. Generation runs one certificate at a time with progress, ETA and **Cancel**; finished PDFs are saved immediately and processed-image memory is released afterwards. Download a **ZIP**, **one combined PDF** or **individual PDFs**.
+1. **Users** (formerly *Clients*): add, edit, set inactive or delete Users — name, organization (printed as the issuer on the verification page), contact email (also the sign-in), logo, notes and status. Users with generated certificates can only be set to inactive.
+2. **Activities**: each User's events or programmes — name, date, description, status. Add them from the User's page or the Activities page.
+3. **Generate certificates**: the same flow as the User portal, with one extra choice first — **the User** and, optionally, **one of their Activities**. The batch is saved to that User (and Activity) and appears in the User's history, marked as generated by the Admin.
+4. **History** of every User's batches, **Templates** gallery (published templates, shown as reference certificates) and the **Dashboard** (certificates per activity).
 
-**Editing later:** in **History**, click **Edit** on a batch (or **Edit** next to a single certificate under **Files**). The batch reopens with its wording, participants, photos, signatures and crops, at the preview step. Change anything and generate again. The corrected certificates get new IDs; by default the old batch is marked as *replaced*, so its QR codes show “no longer valid”.
+### User (guided workflow — 3 steps)
 
-There is **no limit on the number of certificates** per batch (only a 50 MB spreadsheet file-size safety limit, and the abuse limit of 30 batch starts per hour per account).
+1. **Template & wording** — choose a published template (shown as its reference certificate, with a larger reference panel beside the list), keep or edit the suggested wording, format it, insert fields such as `{{name}}`; wording presets.
+2. **Participant data** — **Single certificate** (a form for one participant, with an optional photo) or **Bulk**: upload `.xlsx`, `.xls` or `.csv`, or import from Microsoft Excel or Google Sheets; automatic column matching; photos and signatures. The reference certificate stays visible beside the form.
+3. **Preview & generate** — validation, preview, generation with progress and Cancel; download individual PDFs, one combined PDF or a ZIP.
+
+**Editing later:** in **History**, click **Edit** on a batch. The corrected certificates get new IDs; the old batch can be marked as *replaced*.
+
+There is **no limit on the number of certificates** per batch (only a 50 MB spreadsheet file-size safety limit, and an abuse limit of 30 batch starts per hour per account).
+
+### Template editor
+
+| Area | What it does |
+| --- | --- |
+| **Tool rail** (left) | Select `V`, Hand `H`, Zoom `Z`, Text `T`, Date `D`, QR `Q`, Photo `P`, Signature `S` |
+| **Artboard** | The page on a grey canvas. Pan with **Space + drag**, the middle mouse button, the Hand tool or the mouse wheel; zoom with **Ctrl + wheel**, the Zoom tool (Alt = out), `Ctrl +` / `Ctrl −`, **Fit** (`Ctrl+0`) and **100%** (`Ctrl+1`) |
+| **Selection** | Click, **Shift+click** to add, drag on empty canvas to box-select, `Ctrl+A` all. 8 resize handles (Shift keeps proportions), a **rotate** handle (Shift = 15° steps), arrow keys nudge (Shift = 10×), Shift while dragging constrains to an axis |
+| **Rulers, guides, grid** | Rulers in **px, mm, cm or in**, synced with zoom and pan. Drag from a ruler to create a guide; drag it back onto the ruler or double-click it to remove it. **Grid** toggle (`Ctrl+'`) with adjustable size |
+| **Snapping** | To the grid (when shown), guides, page edges/centre and other fields' edges and centres, with navy **smart alignment lines**; selection handles and guides are orange |
+| **Align & distribute** | Left, centre, right, top, middle, bottom (one field → page, several → each other); distribute horizontally/vertically (3+) |
+| **Edit** | Undo `Ctrl+Z`, redo `Ctrl+Y` / `Ctrl+Shift+Z`, duplicate `Ctrl+D`, copy / cut / paste `Ctrl+C/X/V`, delete `Del`, save `Ctrl+S` |
+| **Right panel** | **Properties** (X, Y, W, H in the chosen unit, rotation, field settings, font, size, colour, alignment) · **Layers** (show/hide and lock — editor only, still printed —, double-click to rename, drag or arrows to reorder) · **Document** (design files, view mode, description, guides, fonts, reference calibration, publish checklist) |
+| **Status bar** | Zoom %, cursor X/Y and selection size in the chosen unit, artboard view (Blank / Overlay / Reference), pages |
+
+Rotation is printed exactly as shown: the PDF renderer rotates each field around its centre.
 
 ### Placeholders
 
@@ -107,10 +166,10 @@ Each generated certificate gets a unique ID (e.g. `CG-7K3M-9QX2-PL4D`) stored in
 ## Privacy and data handling
 
 - Spreadsheets, photos and signatures are processed **in the browser**. PDFs are generated in the browser.
-- Generated PDFs — and the batch's working data (participant rows, photos, signatures, crops) so it can be **edited and generated again from History** — are stored in the browser's IndexedDB on that device for **7 days** and then deleted automatically. Clients can delete them sooner from **History**. None of this is uploaded.
-- The server stores: accounts, templates, presets (wording), batch records (wording + column mapping snapshot, counts) and, per certificate, the ID, status and — only if the client chooses a column for it — the recipient name shown on the verification page.
-- Microsoft Excel and Google Sheets rows pass through the server to the client's browser and are not stored or logged. Access is read-only.
-- No participant data is ever sent to Google/Gemini. The optional AI box suggestion sends only the blank template image, after the administrator ticks a consent box.
+- Generated PDFs — and the batch's working data (participant rows, photos, signatures, crops) so it can be **edited and generated again from History** — are stored in the browser's IndexedDB on that device for **7 days** and then deleted automatically. Users can delete them sooner from **History**. None of this is uploaded.
+- The server stores: accounts, templates, presets (wording), batch records (wording + column mapping snapshot, counts) and, per certificate, the ID, status and — only if the user chooses a column for it — the recipient name shown on the verification page.
+- Microsoft Excel and Google Sheets rows pass through the server to the user's browser and are not stored or logged. Access is read-only.
+- No participant data is ever sent to Google/Gemini. The optional AI box suggestion sends only the blank template image, after the Super Admin ticks a consent box.
 - Server logs contain error messages only, never request bodies.
 
 ## Security
@@ -118,8 +177,13 @@ Each generated certificate gets a unique ID (e.g. `CG-7K3M-9QX2-PL4D`) stored in
 - Passwords hashed with scrypt; minimum 10 characters with letters and numbers.
 - Sessions: random 256-bit tokens in `HttpOnly`, `SameSite=Lax` cookies (`Secure` over HTTPS); only a SHA-256 hash is stored. 7-day sliding expiry. Deactivating a user or changing a password ends their sessions.
 - CSRF: every state-changing API request must carry `X-Requested-With: certigen`.
-- Role checks on every route (`/api/admin/*` admin only, `/api/client/*` client only). Clients can only see published templates assigned to them and only their own presets and batches. Template files are served only to users entitled to them.
+- Role checks on every route (`/api/superadmin/*` Super Admin only, `/api/admin/*` Admin only, `/api/user/*` User only) and per-portal sign-in. Users only see active clients they are linked to, their non-archived activities, published templates assigned to those activities, and only their own presets and batches. Template files are served only to accounts entitled to them.
 - Login throttling (8 failures per 15 minutes per IP + email).
+- **My profile** (all portals, sidebar → My profile): profile photo, name, sign-in email (needs the current password) and password.
+- **Forgot password** (link on every sign-in page): a one-hour, single-use reset link (only its SHA-256 hash is stored). The answer is the same whether or not the email has an account; requests are rate-limited; a reset ends all sessions.
+  - With email (`SMTP_*` and `APP_URL`, see `.env.example`) the link is emailed to the person.
+  - Without email (or when sending fails) the request goes to their administrator: Users → the Admins (Dashboard and Users page), Admins → the Super Admin (Dashboard and Admin accounts). The administrator clicks **Create reset link** and sends it to the person (e.g. by chat), or sets a new password. Any account's row menu also has **Create reset link**.
+  - Super Admin passwords without email: `npm run create-admin -- email "Name"` on the server.
 - Uploads are checked by their real content (magic bytes) and size, not by the file name.
 - Microsoft and Google tokens are encrypted at rest (AES-256-GCM with `APP_SECRET`), stored per account, and never sent to the browser. Disconnecting deletes them (Google tokens are also revoked).
 - Production adds a Content-Security-Policy, HSTS and other security headers.
@@ -137,7 +201,7 @@ Each generated certificate gets a unique ID (e.g. `CG-7K3M-9QX2-PL4D`) stored in
 Security set-up done by the app:
 
 - Every table has **Row Level Security enabled with no policies**, and the `anon` / `authenticated` roles have no table privileges — Supabase's public REST API cannot read or change anything. The server connects as the database owner.
-- The Storage bucket is **private**. Files are served only through the app's `/api/files/:id`, which checks the signed-in user: admins see everything; clients only files of published templates assigned to them (never the reference certificate). Short-lived signed URLs are available server-side (`signedUrl()` in `server/storage.ts`).
+- The Storage bucket is **private**. Files are served only through the app's `/api/files/:id`, which checks the signed-in user: Super Admins and Admins see everything; Users only files of published templates available to them, their templates' reference images and their clients' logos (never Upload A unless the Super Admin chose it as the reference image). Short-lived signed URLs are available server-side (`signedUrl()` in `server/storage.ts`).
 - Uploads are checked by their real content (magic bytes), type and size before they reach Storage.
 
 Storage layout: `templates/{template_id}/blank/…`, `reference/…`, `blank/previews/`, `reference/previews/`, `fonts/…`, `assets/…` (admin signatures), `versions/{version_id}/layout.json` (copy of each published layout). Uploads made before a template exists go to `templates/_unassigned/` and are moved into the template folder when it is saved.
@@ -164,7 +228,7 @@ Notes: the old *Public (no sign-in)* account is kept (deactivated) so its histor
 
 ## Microsoft Excel integration
 
-The integration uses Microsoft Graph with the OAuth 2.0 authorisation-code flow (with PKCE). Users sign in on Microsoft's own page; the app never sees their password. Until it is configured, the client portal says it is unavailable instead of pretending to connect.
+The integration uses Microsoft Graph with the OAuth 2.0 authorisation-code flow (with PKCE). Users sign in on Microsoft's own page; the app never sees their password. Until it is configured, the User portal says it is unavailable instead of pretending to connect.
 
 1. Sign in to the Azure portal → **Microsoft Entra ID → App registrations → New registration**.
 2. Name: `CertiGen`. Supported account types: choose who may connect (your organisation only, or any organisation/personal accounts).
@@ -177,7 +241,7 @@ Notes: the Graph workbook API reads **.xlsx** files only.
 
 ## Google Sheets integration
 
-Uses Google OAuth 2.0 (authorisation code + PKCE) with **read-only** scopes. Until it is configured, the client page says it is not set up — there is no fake connection.
+Uses Google OAuth 2.0 (authorisation code + PKCE) with **read-only** scopes. Until it is configured, the User portal says it is not set up — there is no fake connection.
 
 1. Open the [Google Cloud console](https://console.cloud.google.com/) and create (or pick) a project.
 2. **APIs & Services → Library**: enable the **Google Drive API** and the **Google Sheets API**.
@@ -185,11 +249,11 @@ Uses Google OAuth 2.0 (authorisation code + PKCE) with **read-only** scopes. Unt
 4. **Credentials → Create credentials → OAuth client ID** → *Web application*. Authorised redirect URI: `https://YOUR-DOMAIN/api/integrations/google/callback` (locally `http://localhost:3001/api/integrations/google/callback`).
 5. Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` (and `APP_URL`, or `GOOGLE_REDIRECT_URI`) in `.env` — on Render under **Environment** — and restart.
 
-Clients then click **Connect Google Sheets**, sign in on Google's page, search their spreadsheets, choose a sheet and import. **Re-import** refreshes the rows later.
+Users then click **Connect Google Sheets**, sign in on Google's page, search their spreadsheets, choose a sheet and import. **Re-import** refreshes the rows later.
 
 ## Fonts
 
-Helvetica, Times and Courier are drawn with the bundled **Liberation** fonts (metric-compatible, SIL Open Font License, see `public/fonts/LICENSE-Liberation.txt`), so fonts are always embedded and work offline. Other built-in families (Montserrat, Poppins, Playfair Display, Cinzel, Great Vibes, Alex Brush, JetBrains Mono, Noto Sans Tibetan…) are downloaded from jsDelivr (Fontsource) when generating; if unavailable, Liberation Sans is used. Administrators can upload their own TTF/OTF fonts per template. Dzongkha/Tibetan text and characters a font cannot draw are shaped by the browser and embedded as a high-resolution image inside the box.
+**Roboto** and **DDC Uchen** (Dzongkha) are bundled; **Times New Roman**, Helvetica, Times and Courier are drawn with the bundled metric-compatible **Liberation** fonts (metric-compatible, SIL Open Font License, see `public/fonts/LICENSE-Liberation.txt`), so fonts are always embedded and work offline. Other built-in families (Montserrat, Poppins, Playfair Display, Cinzel, Great Vibes, Alex Brush, JetBrains Mono, Noto Sans Tibetan…) are downloaded from jsDelivr (Fontsource) when generating; if unavailable, Liberation Sans is used. Administrators can upload their own TTF/OTF fonts per template. Dzongkha text (and characters a font cannot draw) is shaped by the browser with the field's font, falling back to DDC Uchen, and embedded as a high-resolution image inside the box.
 
 ---
 
@@ -198,25 +262,35 @@ Helvetica, Times and Courier are drawn with the bundled **Liberation** fonts (me
 ```
 server.ts                 Express entry (API + Vite in dev, dist/ in production)
 server/
-  db.ts                   PostgreSQL (Supabase) connection, schema migrations, RLS lock-down
+  db.ts                   PostgreSQL (Supabase) connection, schema migrations (incl. v3: three portals), RLS lock-down
   storage.ts              Supabase Storage (private bucket) via its REST API
-  pgmini.ts               Tiny PostgreSQL client used only by the automated tests
   auth.ts                 Password hashing, sessions, role guards, login throttling
   http.ts                 Errors, CSRF guard, security headers
-  files.ts                Upload validation, storage, access checks
-  templates.ts            Template/version helpers, content sanitising
-  secret.ts               Token encryption
-  routes/                 auth, admin, client, public (verify + files), microsoft, ai
-  scripts/create-admin.ts, scripts/migrate-to-supabase.ts
-shared/                   Types, placeholder parser, layout sanitiser, rich-text model (used by server and browser)
+  files.ts                Upload validation, storage, per-role file access
+  templates.ts            Template/version helpers, template availability per user/activity
+  routes/
+    superadmin.ts         /api/superadmin — templates, versions, reference image, Admin accounts, audit
+    admin.ts              /api/admin — Users, Activities, published templates (read-only), logos, dashboard
+    user.ts               /api/user and /api/admin/gen — published templates, presets, batches (generation)
+  live.ts                 /api/events — live updates pushed to every open portal
+    auth.ts, public.ts    sign-in (per portal), verification, files
+    microsoft.ts, google.ts, ai.ts
+shared/                   Types, placeholder parser, layout sanitiser, rich-text model (server and browser)
 src/
-  engine/                 Rendering engine (single code path for preview and PDF), text fitting,
-                          fonts, images, spreadsheets, batch validation, generation, local storage
-  pages/admin/            Dashboard, Templates, Designer, Clients, Activity
-  pages/client/           Home, BatchWizard (+ wizard/ steps), History, Presets
-  pages/                  Login, Verify, OAuth completion
-  components/             UI kit, app shell
-tests/api-smoke.ts        End-to-end API test (71 checks)
+  App.tsx                 Routing and role guards for the three portals
+  lib/                    api, auth, router, portals (navigation), theme (light/dark), live (shared updates),
+                          generation (User vs Admin generation flow)
+  engine/                 Rendering engine (single code path for preview and PDF, incl. rotation), samples,
+                          sampleRender (test sandbox / reference images), fonts, images, spreadsheets, batches
+  components/
+    superadmin/           Dashboard, Templates, TemplateDesigner (+ designer/: Workspace, rulers, layers,
+                          properties, units), TemplateTestPage, TeamPage, audit log
+    admin/                Dashboard, Users, UserDetail (+ activities), Activities, AdminPages (generate, history,
+                          templates gallery), dialogs
+    user/                 Home, BatchWizard (+ wizard/ steps), ReferencePanel, History, Presets
+    shared/               UI kit, brand (logo, lockup, ECB ribbon), AppShell, LoginPage, VerifyPage, CertificatePreview,
+                          RichTextEditor, UserLogo, account dialogs
+tests/api-smoke.ts        End-to-end API test (92 checks, all three portals and live updates)
 legacy/                   Previous single-page version, kept for reference (not built)
 ```
 
@@ -230,11 +304,13 @@ The old browser-only app (IndexedDB templates, admin PIN, admin-written "smart s
 
 ```bash
 npm run lint                                  # type check
-# API end-to-end test against a throw-away database:
+# API end-to-end test against a throw-away, EMPTY database:
 # Use a separate (test) Supabase project or a local PostgreSQL in SUPABASE_DB_URL — the test creates data.
 API_ONLY=true PORT=3999 ADMIN_EMAIL=admin@test.local ADMIN_PASSWORD=AdminPass123 npx tsx server.ts
 npm run test:api                              # in a second terminal
 ```
+
+The first account (`ADMIN_EMAIL`) is the **Super Admin**; the test creates an Admin, Users and Activities itself.
 
 ## Troubleshooting
 
@@ -242,6 +318,7 @@ npm run test:api                              # in a second terminal
 - **`connect ENETUNREACH` / timeout to `db.….supabase.co`** — you used the direct connection; use the **Session pooler** string.
 - **"password authentication failed"** — the password in `SUPABASE_DB_URL` is wrong (reset it under Project Settings → Database). Special characters in the password must be URL-encoded.
 - **"The \"pg\" package is missing"** — run `npm install`.
-- **"No administrator account exists yet"** — set `ADMIN_EMAIL` and `ADMIN_PASSWORD` in `.env` or run `npm run create-admin`.
+- **"No Super Admin account exists yet"** — set `ADMIN_EMAIL` and `ADMIN_PASSWORD` in `.env` or run `npm run create-admin`.
+- **"This account belongs to the … portal"** — each role signs in on its own page: `/superadmin/login`, `/admin/login` or `/login`.
 - **Microsoft "not available on this server"** — `MS_CLIENT_ID`, `MS_CLIENT_SECRET` and `APP_URL` (or `MS_REDIRECT_URI`) must be set.
 - **Password-protected PDF** — export an unprotected copy of the design and upload that.

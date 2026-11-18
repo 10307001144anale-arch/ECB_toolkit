@@ -1,0 +1,3 @@
+Roboto (Roboto-*.ttf) — Copyright Google LLC. Licensed under the Apache License, Version 2.0: https://www.apache.org/licenses/LICENSE-2.0
+DDC Uchen (DDC_Uchen.ttf) — Dzongkha Development Commission, Royal Government of Bhutan. Distributed for Dzongkha computing; check the DDC terms before redistributing outside ECB systems.
+Liberation fonts — see LICENSE-Liberation.txt (SIL Open Font License).

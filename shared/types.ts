@@ -4,7 +4,9 @@ export type { FormattingPermissions, RichDoc, RichRun, RichParagraph } from './r
 // Shared domain types used by both the Express backend and the React frontend.
 // Keep this file free of runtime imports so it can be loaded by Node's type stripping.
 
-export type Role = 'admin' | 'client';
+/** superadmin = templates & design · admin = clients, activities & users · user = generates certificates. */
+export type Role = 'superadmin' | 'admin' | 'user';
+export type PortalId = Role;
 
 export interface PublicUser {
   id: string;
@@ -15,6 +17,8 @@ export interface PublicUser {
   active: boolean;
   createdAt: number;
   lastLoginAt: number | null;
+  /** Profile photo (file id), if the account has one. */
+  avatarFileId?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -41,6 +45,12 @@ export interface BoxBase {
   y: number;
   w: number;
   h: number;
+  /** Rotation in degrees (clockwise, around the box centre). */
+  rotation?: number;
+  /** Editor only: hidden in the designer canvas (still printed). */
+  hidden?: boolean;
+  /** Editor only: cannot be selected or moved on the canvas. */
+  locked?: boolean;
 }
 
 export interface TextBox extends BoxBase {
@@ -168,6 +178,16 @@ export interface TemplateLayout {
   referenceMime: 'application/pdf' | 'image/png' | 'image/jpeg' | null;
   referencePages: LayoutPage[];
   referenceOverlay: ReferenceOverlay;
+  /** Ruler guides drawn in the designer (editor only, never printed). */
+  guides?: Guide[];
+}
+
+export interface Guide {
+  id: string;
+  page: number;
+  axis: 'x' | 'y';
+  /** Position in % of the page width (axis x) or height (axis y). */
+  pos: number;
 }
 
 /** How the reference certificate is laid over the blank design (calibration). */
@@ -197,11 +217,27 @@ export interface TemplateSummary {
   createdAt: number;
   updatedAt: number;
   usageCount?: number;
+  /** Sample/reference image shown to users next to the form. */
+  referenceImageFileId: string | null;
+  createdBy: string | null;
+  createdByName?: string | null;
+  /** Role of the account that created the template (admins cannot delete Super Admin templates). */
+  createdByRole?: Role | null;
+  /** Set when an Admin marked the template as recommended ("use this template"). */
+  recommendedAt?: number | null;
+  recommendedByName?: string | null;
+}
+
+/** What is linked to a template, shown before deleting it. */
+export interface TemplateUsage {
+  /** Users who generated certificates with it. */
+  users: number;
+  batches: number;
+  certificates: number;
 }
 
 export interface TemplateDetail extends TemplateSummary {
   draft: TemplateLayout;
-  assignedClientIds: string[];
 }
 
 export interface TemplateVersion {
@@ -223,7 +259,42 @@ export interface ClientTemplate {
   versionNumber: number;
   layout: TemplateLayout;
   thumbnailFileId: string | null;
+  referenceImageFileId: string | null;
   publishedAt: number;
+  /** Set when an Admin marked the template as recommended. */
+  recommendedAt?: number | null;
+  recommendedByName?: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Activities (managed in the Admin portal, under each User).
+// ---------------------------------------------------------------------------
+
+export type ActivityStatus = 'planned' | 'active' | 'completed' | 'archived';
+export interface ActivityRecord {
+  id: string;
+  userId: string;
+  userName?: string;
+  name: string;
+  /** YYYY-MM-DD or ''. */
+  date: string;
+  description: string;
+  status: ActivityStatus;
+  createdAt: number;
+  updatedAt: number;
+  batchCount?: number;
+  certificateCount?: number;
+}
+
+/** A User account as the Admin portal sees it. */
+export interface UserAccount extends PublicUser {
+  /** Contact email is the sign-in email; organisation is printed as the issuer. */
+  logoFileId: string | null;
+  notes: string;
+  activityCount: number;
+  batchCount: number;
+  certificateCount: number;
+  lastGeneratedAt: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -310,6 +381,13 @@ export interface BatchRecord {
   templateTitle: string;
   templateVersionId: string;
   templateVersionNumber: number;
+  activityId: string | null;
+  activityName?: string | null;
+  /** Organisation of the User the batch belongs to. */
+  orgName?: string | null;
+  /** Admin who generated the batch on the User's behalf (null = the User). */
+  createdBy?: string | null;
+  createdByName?: string | null;
   content: ContentConfig;
   mapping: MappingConfig;
   total: number;

@@ -6,6 +6,12 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev"],
       "port": 3000
+    },
+    {
+      "name": "certigen-local",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": ["/c", "set PORT=3995&& set SUPABASE_DB_URL=postgresql://postgres@localhost:55432/demo?sslmode=disable&& set SUPABASE_URL=http://localhost:55433&& set SUPABASE_SERVICE_ROLE_KEY=local&& set APP_SECRET=localsecret&& set APP_URL=http://localhost:3995&& set ADMIN_EMAIL=admin@test.local&& set ADMIN_PASSWORD=AdminPass123&& set MS_CLIENT_ID=&& set GEMINI_API_KEY=&& npx tsx server.ts"],
+      "port": 3995
     }
   ]
 }

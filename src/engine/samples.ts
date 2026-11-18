@@ -121,17 +121,33 @@ export async function realisticCertificate(
   verifyBase: string,
   fixedSignature: (boxKey: string) => Blob | null,
   images?: ImageLibrary,
-  opts: { exampleTextForEmptyBoxes?: boolean } = {}
+  opts: {
+    exampleTextForEmptyBoxes?: boolean;
+    /** Placeholder values (keys normalised with normKey) used instead of the examples. */
+    values?: Record<string, string>;
+    certificateId?: string;
+    photo?: Blob | null;
+  } = {}
 ): Promise<ResolvedCertificate> {
   const cert = draftCertificate(layout, content, verifyBase, fixedSignature, images);
+  const certId = opts.certificateId || PREVIEW_CERT_ID;
   const value = (tok: { key: string; name: string }) =>
-    tok.key === 'certificateid' ? PREVIEW_CERT_ID : tok.key === 'row' ? '1' : tok.key === 'today' ? formatDate(new Date(), 'D MMMM YYYY') : sampleValue(tok.name);
+    opts.values?.[tok.key] !== undefined
+      ? opts.values[tok.key]
+      : tok.key === 'certificateid'
+        ? certId
+        : tok.key === 'row'
+          ? '1'
+          : tok.key === 'today'
+            ? formatDate(new Date(), 'D MMMM YYYY')
+            : sampleValue(tok.name);
   const fill = (text: string) => {
     const values: Record<string, string> = {};
     for (const t of findPlaceholders(text)) values[t.key] = value(t);
     return resolvePlaceholders(text, values).text;
   };
-  const [photo, signature] = await Promise.all([samplePhoto(), sampleSignature()]);
+  const [examplePhoto, signature] = await Promise.all([samplePhoto(), sampleSignature()]);
+  const photo = opts.photo || examplePhoto;
   for (const b of layout.boxes) {
     if (b.type === 'text') {
       let t = cert.texts[b.key] || '';
@@ -141,8 +157,8 @@ export async function realisticCertificate(
       if (rich) cert.rich![b.key] = substituteRich(rich, fill);
     } else if (b.type === 'qr') {
       const q = cert.qr[b.key];
-      if (q) cert.qr[b.key] = fill(q);
-      else if (opts.exampleTextForEmptyBoxes) cert.qr[b.key] = `${verifyBase}/verify/${PREVIEW_CERT_ID}`;
+      if (q) cert.qr[b.key] = fill(q.replace(PREVIEW_CERT_ID, certId));
+      else if (opts.exampleTextForEmptyBoxes) cert.qr[b.key] = `${verifyBase}/verify/${certId}`;
     } else if (b.type === 'photo') {
       if (!cert.images[b.key]) cert.images[b.key] = photo;
     } else if (b.type === 'signature') {

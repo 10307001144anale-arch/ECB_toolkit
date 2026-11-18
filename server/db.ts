@@ -275,6 +275,186 @@ const MIGRATIONS: string[] = [
     END IF;
   END $$;
   `,
+  // 3 — three portals: superadmin (templates), admin (clients, activities,
+  // users), user (generates). Existing admins become Super Admins, existing
+  // client accounts become Users; each old client organisation becomes a
+  // Client with a default "General" activity that inherits its template
+  // access and batch history.
+  `
+  ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
+  UPDATE users SET role = 'superadmin' WHERE role = 'admin';
+  UPDATE users SET role = 'user' WHERE role = 'client';
+  ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('superadmin','admin','user'));
+
+  CREATE TABLE clients (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    organization TEXT NOT NULL DEFAULT '',
+    email TEXT NOT NULL DEFAULT '',
+    logo_file_id TEXT,
+    notes TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','inactive')),
+    created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+    created_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL
+  );
+
+  CREATE TABLE activities (
+    id TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    date TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('planned','active','completed','archived')),
+    created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+    created_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL
+  );
+  CREATE INDEX activities_client_idx ON activities(client_id);
+
+  CREATE TABLE assignments (
+    template_id TEXT NOT NULL REFERENCES templates(id) ON DELETE CASCADE,
+    activity_id TEXT NOT NULL REFERENCES activities(id) ON DELETE CASCADE,
+    assigned_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+    assigned_at BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (template_id, activity_id)
+  );
+  CREATE INDEX assignments_activity_idx ON assignments(activity_id);
+
+  CREATE TABLE user_clients (
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    client_id TEXT NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+    PRIMARY KEY (user_id, client_id)
+  );
+  CREATE INDEX user_clients_client_idx ON user_clients(client_id);
+
+  ALTER TABLE batches ADD COLUMN activity_id TEXT REFERENCES activities(id) ON DELETE SET NULL;
+  CREATE INDEX batches_activity_idx ON batches(activity_id);
+  ALTER TABLE templates ADD COLUMN reference_image_file_id TEXT;
+
+  ALTER TABLE files DROP CONSTRAINT IF EXISTS files_kind_check;
+  ALTER TABLE files ADD CONSTRAINT files_kind_check CHECK (kind IN ('artwork','reference','preview','signature','font','asset','logo','refimage'));
+
+  DO $$
+  DECLARE
+    r RECORD;
+    cid TEXT;
+    aid TEXT;
+    t BIGINT := (extract(epoch FROM clock_timestamp()) * 1000)::BIGINT;
+  BEGIN
+    FOR r IN SELECT DISTINCT COALESCE(NULLIF(trim(organisation), ''), name) AS org FROM users WHERE role = 'user' LOOP
+      cid := 'cli_' || substr(md5(random()::text || clock_timestamp()::text), 1, 16);
+      aid := 'acv_' || substr(md5(random()::text || clock_timestamp()::text), 1, 16);
+      INSERT INTO clients (id, name, organization, email, logo_file_id, notes, status, created_by, created_at, updated_at)
+        VALUES (cid, r.org, r.org, '', NULL, 'Created automatically from existing client accounts.', 'active', NULL, t, t);
+      INSERT INTO activities (id, client_id, name, date, description, status, created_by, created_at, updated_at)
+        VALUES (aid, cid, 'General', '', 'Created automatically; holds earlier certificates.', 'active', NULL, t, t);
+      INSERT INTO user_clients (user_id, client_id)
+        SELECT id, cid FROM users WHERE role = 'user' AND COALESCE(NULLIF(trim(organisation), ''), name) = r.org;
+      INSERT INTO assignments (template_id, activity_id, assigned_by, assigned_at)
+        SELECT DISTINCT a.template_id, aid, NULL::TEXT, t FROM template_access a JOIN users u ON u.id = a.client_id
+         WHERE u.role = 'user' AND COALESCE(NULLIF(trim(u.organisation), ''), u.name) = r.org
+        ON CONFLICT DO NOTHING;
+      UPDATE batches SET activity_id = aid
+       WHERE client_id IN (SELECT id FROM users WHERE role = 'user' AND COALESCE(NULLIF(trim(organisation), ''), name) = r.org);
+    END LOOP;
+  END $$;
+
+  DO $$
+  DECLARE t TEXT;
+  BEGIN
+    FOREACH t IN ARRAY ARRAY['clients','activities','assignments','user_clients']
+    LOOP
+      EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
+    END LOOP;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+      EXECUTE 'REVOKE ALL ON ALL TABLES IN SCHEMA public FROM anon';
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+      EXECUTE 'REVOKE ALL ON ALL TABLES IN SCHEMA public FROM authenticated';
+    END IF;
+  END $$;
+  `,
+  // 4 — "Client" becomes "User": Admins manage User accounts (with
+  // organization, logo, notes, status) and the Activities of each User.
+  // Published templates are available to every User (no assignments).
+  // Batches remember the Admin who generated them on a User's behalf.
+  `
+  ALTER TABLE users ADD COLUMN logo_file_id TEXT;
+  ALTER TABLE users ADD COLUMN notes TEXT NOT NULL DEFAULT '';
+  ALTER TABLE activities ADD COLUMN user_id TEXT REFERENCES users(id) ON DELETE CASCADE;
+  ALTER TABLE activities ALTER COLUMN client_id DROP NOT NULL;
+  CREATE INDEX activities_user_idx ON activities(user_id);
+  ALTER TABLE batches ADD COLUMN created_by TEXT REFERENCES users(id) ON DELETE SET NULL;
+
+  -- Users inherit organisation and logo from the client they were linked to.
+  UPDATE users u SET organisation = COALESCE(NULLIF(trim(u.organisation), ''), NULLIF(c.organization, ''), c.name),
+                     logo_file_id = COALESCE(u.logo_file_id, c.logo_file_id)
+    FROM user_clients uc JOIN clients c ON c.id = uc.client_id
+   WHERE uc.user_id = u.id AND u.role = 'user';
+
+  -- Each activity goes to one user of its client; other users of that client
+  -- get their own copy, and their batches move with them.
+  DO $$
+  DECLARE
+    a RECORD;
+    uc RECORD;
+    first_user TEXT;
+    copy_id TEXT;
+  BEGIN
+    FOR a IN SELECT * FROM activities WHERE user_id IS NULL AND client_id IS NOT NULL LOOP
+      first_user := NULL;
+      FOR uc IN SELECT user_id FROM user_clients WHERE client_id = a.client_id ORDER BY user_id LOOP
+        IF first_user IS NULL THEN
+          first_user := uc.user_id;
+          UPDATE activities SET user_id = uc.user_id WHERE id = a.id;
+        ELSE
+          copy_id := 'acv_' || substr(md5(random()::text || clock_timestamp()::text), 1, 16);
+          INSERT INTO activities (id, client_id, user_id, name, date, description, status, created_by, created_at, updated_at)
+            VALUES (copy_id, a.client_id, uc.user_id, a.name, a.date, a.description, a.status, a.created_by, a.created_at, a.updated_at);
+          UPDATE batches SET activity_id = copy_id WHERE activity_id = a.id AND client_id = uc.user_id;
+        END IF;
+      END LOOP;
+    END LOOP;
+  END $$;
+  `,
+  // 5 — Admins can mark a template as recommended ("use this template").
+  `
+  ALTER TABLE templates ADD COLUMN recommended_by TEXT REFERENCES users(id) ON DELETE SET NULL;
+  ALTER TABLE templates ADD COLUMN recommended_at BIGINT;
+  `,
+  // 6 — Upload A becomes the cover image of existing templates that have none.
+  `
+  UPDATE templates t
+     SET reference_image_file_id = t.draft_json::jsonb #>> '{referencePages,0,previewFileId}'
+   WHERE t.reference_image_file_id IS NULL
+     AND EXISTS (SELECT 1 FROM files f WHERE f.id = t.draft_json::jsonb #>> '{referencePages,0,previewFileId}');
+  `,
+  // 7 — Profile photos and "forgot password" reset links.
+  `
+  ALTER TABLE users ADD COLUMN avatar_file_id TEXT;
+  ALTER TABLE files DROP CONSTRAINT IF EXISTS files_kind_check;
+  ALTER TABLE files ADD CONSTRAINT files_kind_check CHECK (kind IN ('artwork','reference','preview','signature','font','asset','logo','refimage','avatar'));
+  CREATE TABLE password_resets (
+    token_hash TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at BIGINT NOT NULL,
+    expires_at BIGINT NOT NULL,
+    used_at BIGINT
+  );
+  CREATE INDEX password_resets_user_idx ON password_resets(user_id);
+  `,
+  // 8 — "Forgot password" requests that go to an administrator when email cannot be sent.
+  `
+  CREATE TABLE password_help_requests (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at BIGINT NOT NULL,
+    resolved_at BIGINT,
+    resolved_by TEXT REFERENCES users(id) ON DELETE SET NULL
+  );
+  CREATE INDEX password_help_requests_open_idx ON password_help_requests(user_id) WHERE resolved_at IS NULL;
+  `,
 ];
 
 async function migrate() {

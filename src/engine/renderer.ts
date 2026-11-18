@@ -9,6 +9,7 @@
 // Everything is clipped to its admin-defined box.
 
 import {
+  concatTransformationMatrix,
   PDFDocument,
   PDFEmbeddedPage,
   PDFImage,
@@ -23,7 +24,7 @@ import {
 import QRCode from 'qrcode';
 import type { PhotoBox, PhotoCrop, QrBox, SignatureBox, TemplateLayout, TextBox } from '../../shared/types';
 import { signatureSplit, type SignatureSplit } from '../../shared/layout';
-import { FontEmbedder, registerBrowserFont, type EmbeddedFont, type FileFetcher } from './fonts';
+import { ensureDzongkhaFont, FontEmbedder, registerBrowserFont, type EmbeddedFont, type FileFetcher } from './fonts';
 import { applyTransform, layoutRich, layoutText, styleOf, TEXT_PADDING, type Measurer, type RichStyle, type StyledMeasurer } from './textLayout';
 import { ALL_FORMATTING, hasFormatting, richToPlain, type RichDoc } from '../../shared/rich';
 import { autoCrop, detectFocus, prepareImage, type SignaturePlacement } from './images';
@@ -224,6 +225,17 @@ export class CertificateRenderer {
           w: (box.w / 100) * g.width,
           h: (box.h / 100) * g.height,
         };
+        // Rotated boxes: rotate the drawing around the box centre (clockwise on screen = negative in PDF space).
+        const rot = box.rotation || 0;
+        if (rot) {
+          const cx = rect.x + rect.w / 2;
+          const cy = rect.top - rect.h / 2;
+          const a = (-rot * Math.PI) / 180;
+          const cos = Math.cos(a);
+          const sin = Math.sin(a);
+          page.pushOperators(pushGraphicsState(), concatTransformationMatrix(cos, sin, -sin, cos, cx - cx * cos + cy * sin, cy - cx * sin - cy * cos));
+        }
+        try {
         if (box.type === 'text') {
           const value = cert.texts[box.key];
           const rich = cert.rich?.[box.key];
@@ -261,6 +273,9 @@ export class CertificateRenderer {
             throw new Error(`No image for the required box "${box.label}".`);
           }
         }
+        } finally {
+          if (rot) page.pushOperators(popGraphicsState());
+        }
       }
     }
     return warnings;
@@ -270,7 +285,7 @@ export class CertificateRenderer {
     const c = document.createElement('canvas').getContext('2d')!;
     return {
       width(text, size) {
-        c.font = `${box.italic ? 'italic ' : ''}${box.fontWeight} ${size}px "${family}", "Noto Sans Tibetan", sans-serif`;
+        c.font = `${box.italic ? 'italic ' : ''}${box.fontWeight} ${size}px "${family}", "DDC Uchen", sans-serif`;
         return c.measureText(text).width;
       },
     };
@@ -284,6 +299,7 @@ export class CertificateRenderer {
     let measurer: Measurer;
     let browserFamily = box.fontFamily;
     if (raster) {
+      await ensureDzongkhaFont();
       browserFamily = await registerBrowserFont(box.fontFamily, font.bytes, box.fontWeight, box.italic);
       measurer = this.canvasMeasurer(browserFamily, box);
     } else {
@@ -416,7 +432,7 @@ export class CertificateRenderer {
     const c = canvas.getContext('2d')!;
     c.scale(scale, scale);
     c.fillStyle = box.color;
-    c.font = `${box.italic ? 'italic ' : ''}${box.fontWeight} ${fontSize}px "${family}", "Noto Sans Tibetan", sans-serif`;
+    c.font = `${box.italic ? 'italic ' : ''}${box.fontWeight} ${fontSize}px "${family}", "DDC Uchen", sans-serif`;
     (c as any).letterSpacing = `${box.letterSpacing}px`;
     c.textBaseline = 'alphabetic';
     lines.forEach((line, i) => {

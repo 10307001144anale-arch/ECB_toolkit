@@ -31,16 +31,30 @@ const WEB_FONTS: Record<string, WebFontSource> = {
  * Liberation fonts (SIL OFL) so the font is embedded in every PDF and works
  * offline. The built-in PDF fonts are only a last-resort fallback.
  */
-const LOCAL_FONTS: Record<string, string> = {
-  Helvetica: 'LiberationSans',
-  Times: 'LiberationSerif',
-  Courier: 'LiberationMono',
+type Style = 'Regular' | 'Bold' | 'Italic' | 'BoldItalic';
+const family4 = (base: string): Record<Style, string> => ({ Regular: `${base}-Regular`, Bold: `${base}-Bold`, Italic: `${base}-Italic`, BoldItalic: `${base}-BoldItalic` });
+
+/**
+ * Fonts bundled in /public/fonts. "Times New Roman" (ECB official documents)
+ * uses Liberation Serif, which has identical metrics. Roboto (ECB interface
+ * typeface) has no bold italic file, so bold italic uses Roboto Bold.
+ * DDC Uchen (Dzongkha) has a single style.
+ */
+const LOCAL_FONTS: Record<string, Record<Style, string>> = {
+  Helvetica: family4('LiberationSans'),
+  Times: family4('LiberationSerif'),
+  'Times New Roman': family4('LiberationSerif'),
+  Courier: family4('LiberationMono'),
+  Roboto: { Regular: 'Roboto-Regular', Bold: 'Roboto-Bold', Italic: 'Roboto-Italic', BoldItalic: 'Roboto-Bold' },
+  'DDC Uchen': { Regular: 'DDC_Uchen', Bold: 'DDC_Uchen', Italic: 'DDC_Uchen', BoldItalic: 'DDC_Uchen' },
 };
 
-async function fetchLocalFont(base: string, weight: number, italic: boolean): Promise<ArrayBuffer | null> {
-  const style = weight >= 700 ? (italic ? 'BoldItalic' : 'Bold') : italic ? 'Italic' : 'Regular';
+async function fetchLocalFont(family: string, weight: number, italic: boolean): Promise<ArrayBuffer | null> {
+  const style: Style = weight >= 700 ? (italic ? 'BoldItalic' : 'Bold') : italic ? 'Italic' : 'Regular';
+  const file = LOCAL_FONTS[family]?.[style];
+  if (!file) return null;
   try {
-    const r = await fetch(`/fonts/${base}-${style}.ttf`);
+    const r = await fetch(`/fonts/${file}.ttf`);
     if (!r.ok) return null;
     return await r.arrayBuffer();
   } catch {
@@ -52,6 +66,7 @@ const STANDARD: Record<string, [StandardFonts, StandardFonts, StandardFonts, Sta
   // [regular, bold, italic, bold-italic]
   Helvetica: [StandardFonts.Helvetica, StandardFonts.HelveticaBold, StandardFonts.HelveticaOblique, StandardFonts.HelveticaBoldOblique],
   Times: [StandardFonts.TimesRoman, StandardFonts.TimesRomanBold, StandardFonts.TimesRomanItalic, StandardFonts.TimesRomanBoldItalic],
+  'Times New Roman': [StandardFonts.TimesRoman, StandardFonts.TimesRomanBold, StandardFonts.TimesRomanItalic, StandardFonts.TimesRomanBoldItalic],
   Courier: [StandardFonts.Courier, StandardFonts.CourierBold, StandardFonts.CourierOblique, StandardFonts.CourierBoldOblique],
 };
 
@@ -95,8 +110,7 @@ export function getFontBytes(box: Pick<TextBox, 'fontFamily' | 'fontWeight' | 'i
         return null;
       }
     }
-    const local = LOCAL_FONTS[box.fontFamily];
-    if (local) return fetchLocalFont(local, weight, box.italic);
+    if (LOCAL_FONTS[box.fontFamily]) return fetchLocalFont(box.fontFamily, weight, box.italic);
     const web = WEB_FONTS[box.fontFamily];
     if (web) return fetchWebFont(web, weight, box.italic);
     return null;
@@ -166,6 +180,27 @@ export class FontEmbedder {
 
 /** Registers a font with the browser so the canvas fallback renderer can use it. */
 const registeredFaces = new Map<string, Promise<string>>();
+/**
+ * Makes sure DDC Uchen (bundled) is available to the browser, so Dzongkha text
+ * is drawn with it in previews and PDFs whatever the field's font is.
+ */
+let dzReady: Promise<void> | null = null;
+export function ensureDzongkhaFont(): Promise<void> {
+  dzReady ||= (async () => {
+    try {
+      if ([...(document.fonts as any)].some((f: FontFace) => f.family.replace(/"/g, '') === 'DDC Uchen' && f.status === 'loaded')) return;
+      const bytes = await fetchLocalFont('DDC Uchen', 400, false);
+      if (!bytes) return;
+      const face = new FontFace('DDC Uchen', bytes);
+      await face.load();
+      (document.fonts as any).add(face);
+    } catch {
+      /* fall back to the system font */
+    }
+  })();
+  return dzReady;
+}
+
 export function registerBrowserFont(family: string, bytes: ArrayBuffer | null, weight: string, italic: boolean): Promise<string> {
   if (!bytes) return Promise.resolve(family);
   const alias = `cg-${family.replace(/\W+/g, '-')}-${weight}-${italic ? 'i' : 'n'}`;

@@ -1,4 +1,4 @@
-// CertiGen server: REST API + SQLite database + Vite (dev) or static build (prod).
+// CertiGen server: REST API + Supabase PostgreSQL + Vite (dev) or static build (prod).
 //
 //   npm run dev    -> development with hot reload
 //   npm run build  -> build the frontend into dist/
@@ -22,8 +22,10 @@ const { ensureBucket } = await import('./server/storage.ts');
 const { sessionMiddleware, createUser, passwordProblem, purgeExpiredSessions } = await import('./server/auth.ts');
 const { csrfGuard, errorHandler, securityHeaders } = await import('./server/http.ts');
 const { authRouter } = await import('./server/routes/auth.ts');
+const { superadminRouter } = await import('./server/routes/superadmin.ts');
 const { adminRouter } = await import('./server/routes/admin.ts');
-const { clientRouter } = await import('./server/routes/client.ts');
+const { userRouter, adminGenerationRouter } = await import('./server/routes/user.ts');
+const { eventsHandler, liveChanges } = await import('./server/live.ts');
 const { publicRouter, filesRouter } = await import('./server/routes/public.ts');
 const { microsoftRouter } = await import('./server/routes/microsoft.ts');
 const { aiRouter } = await import('./server/routes/ai.ts');
@@ -31,15 +33,15 @@ const { googleRouter } = await import('./server/routes/google.ts');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-/** Creates the first administrator from ADMIN_EMAIL / ADMIN_PASSWORD when no admin exists. */
+/** Creates the first Super Admin from ADMIN_EMAIL / ADMIN_PASSWORD when none exists. */
 async function bootstrapAdmin() {
-  const hasAdmin = await db.one("SELECT 1 FROM users WHERE role = 'admin' LIMIT 1");
+  const hasAdmin = await db.one("SELECT 1 FROM users WHERE role = 'superadmin' LIMIT 1");
   if (hasAdmin) return;
   const email = process.env.ADMIN_EMAIL?.trim().toLowerCase();
   const password = process.env.ADMIN_PASSWORD || '';
   if (!email || !password) {
     console.warn(
-      '\n  No administrator account exists yet.\n' +
+      '\n  No Super Admin account exists yet.\n' +
         '  Set ADMIN_EMAIL and ADMIN_PASSWORD in .env and restart, or run:\n' +
         '    npm run create-admin -- you@example.org "Your Name"\n'
     );
@@ -50,9 +52,9 @@ async function bootstrapAdmin() {
     console.warn(`  ADMIN_PASSWORD rejected: ${problem}`);
     return;
   }
-  const u = await createUser({ email, name: process.env.ADMIN_NAME || 'Administrator', password, role: 'admin' });
+  const u = await createUser({ email, name: process.env.ADMIN_NAME || 'Administrator', password, role: 'superadmin' });
   await logActivity(u.id, 'admin_bootstrapped', email);
-  console.log(`  Created administrator account ${email}. You can remove ADMIN_PASSWORD from .env now.`);
+  console.log(`  Created Super Admin account ${email}. You can remove ADMIN_PASSWORD from .env now.`);
 }
 
 async function start() {
@@ -78,13 +80,17 @@ async function start() {
   });
 
   app.get('/api/health', (_req, res) => res.json({ ok: true }));
+  app.get('/api/events', eventsHandler as any);
+  app.use('/api', liveChanges);
   app.use('/api/auth', authRouter);
-  app.use('/api/admin/ai', aiRouter);
+  app.use('/api/superadmin/ai', aiRouter);
+  app.use('/api/superadmin', superadminRouter);
+  app.use('/api/admin/gen', adminGenerationRouter);
   app.use('/api/admin', adminRouter);
-  app.use('/api/client', clientRouter);
-  // Spreadsheet integrations: signed-in clients only (the OAuth callback carries its own state cookie).
+  app.use('/api/user', userRouter);
+  // Spreadsheet integrations: signed-in users only (the OAuth callback carries its own state cookie).
   const integrationAccess = (req: any, res: any, next: any) =>
-    req.user?.role === 'client' || req.path === '/callback' ? next() : res.status(401).json({ error: 'Please sign in.' });
+    req.user?.role === 'user' || req.path === '/callback' ? next() : res.status(401).json({ error: 'Please sign in.' });
   app.use('/api/integrations/microsoft', integrationAccess, microsoftRouter);
   app.use('/api/integrations/google', integrationAccess, googleRouter);
   app.use('/api/public', publicRouter);
@@ -113,7 +119,7 @@ async function start() {
   httpServer.listen(PORT, '0.0.0.0', () => {
     const url = `http://localhost:${PORT}`;
     console.log(`CertiGen running at ${url} (${isProd ? 'production' : 'development'})`);
-    if (process.argv.includes('--open')) openBrowser(`${url}/app`);
+    if (process.argv.includes('--open')) openBrowser(`${url}/`);
   });
 }
 

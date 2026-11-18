@@ -20,6 +20,9 @@ import type {
 } from './types.ts';
 
 export const FONT_FAMILIES = [
+  'Roboto',
+  'Times New Roman',
+  'DDC Uchen',
   'Helvetica',
   'Times',
   'Courier',
@@ -48,6 +51,7 @@ export function emptyLayout(): TemplateLayout {
     referenceMime: null,
     referencePages: [],
     referenceOverlay: defaultOverlay(),
+    guides: [],
   };
 }
 
@@ -320,6 +324,9 @@ export function sanitizeLayout(input: any, opts: { renumberSignatures?: boolean 
       y: num(b?.y, 0, 0, 100 - h),
       w,
       h,
+      ...(num(b?.rotation, 0, -360, 360) % 360 ? { rotation: Math.round((num(b?.rotation, 0, -360, 360) % 360) * 100) / 100 } : {}),
+      ...(b?.hidden === true ? { hidden: true } : {}),
+      ...(b?.locked === true ? { locked: true } : {}),
     };
     if (type === 'text') {
       const minFontSize = num(b?.minFontSize, 8, 4, 200);
@@ -412,6 +419,13 @@ export function sanitizeLayout(input: any, opts: { renumberSignatures?: boolean 
       : null,
     referencePages: src.referenceFileId ? referencePages : [],
     referenceOverlay,
+    guides: Array.isArray(src.guides)
+      ? src.guides.slice(0, 200).flatMap((g: any) => {
+          const axis = g?.axis === 'y' ? 'y' : g?.axis === 'x' ? 'x' : null;
+          if (!axis) return [];
+          return [{ id: str(g?.id, '', 40) || `g_${Math.random().toString(36).slice(2, 10)}`, page: Math.floor(num(g?.page, 0, 0, pageCount - 1)), axis, pos: num(g?.pos, 0, 0, 100) }];
+        })
+      : [],
   };
 }
 

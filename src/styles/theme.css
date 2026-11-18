@@ -1,0 +1,190 @@
+/* =============================================================================
+   CertiGen theme — the ONE place for colours, fonts, radii and spacing.
+   Brand-inspired (Election Commission of Bhutan): deep navy, warm orange accent,
+   rounded friendly shapes, calm and readable.
+
+   Contrast rules built into these tokens (WCAG):
+   - text ≥ 4.5:1, icons and borders ≥ 3:1 against their background;
+   - headings navy #002F6C, body #2B2B2B, secondary text never lighter than #5A5A5A;
+   - orange / yellow are never text on light backgrounds; on orange or yellow
+     the text is navy; on navy the text is white (orange only for small
+     labels and active states).
+   Change a value here and every screen follows.
+   ========================================================================== */
+
+/* ---------------------------------------------------------------- fonts
+   Roboto for the interface, DDC Uchen for Dzongkha, Times New Roman for
+   certificates (drawn with its metric twin Liberation Serif when not installed). */
+@font-face { font-family: "Roboto"; src: url("/fonts/Roboto-Regular.ttf") format("truetype"); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: "Roboto"; src: url("/fonts/Roboto-Italic.ttf") format("truetype"); font-weight: 400; font-style: italic; font-display: swap; }
+@font-face { font-family: "Roboto"; src: url("/fonts/Roboto-Medium.ttf") format("truetype"); font-weight: 500 600; font-style: normal; font-display: swap; }
+@font-face { font-family: "Roboto"; src: url("/fonts/Roboto-Bold.ttf") format("truetype"); font-weight: 700 900; font-style: normal; font-display: swap; }
+@font-face { font-family: "Roboto"; src: url("/fonts/Roboto-Bold.ttf") format("truetype"); font-weight: 700 900; font-style: italic; font-display: swap; }
+@font-face { font-family: "DDC Uchen"; src: url("/fonts/DDC_Uchen.ttf") format("truetype"); font-weight: 400 700; font-style: normal; font-display: swap; }
+@font-face { font-family: "Times New Roman Cert"; src: url("/fonts/LiberationSerif-Regular.ttf") format("truetype"); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: "Times New Roman Cert"; src: url("/fonts/LiberationSerif-Bold.ttf") format("truetype"); font-weight: 700; font-style: normal; font-display: swap; }
+@font-face { font-family: "Times New Roman Cert"; src: url("/fonts/LiberationSerif-Italic.ttf") format("truetype"); font-weight: 400; font-style: italic; font-display: swap; }
+@font-face { font-family: "Times New Roman Cert"; src: url("/fonts/LiberationSerif-BoldItalic.ttf") format("truetype"); font-weight: 700; font-style: italic; font-display: swap; }
+
+@theme {
+  /* Typography */
+  --font-sans: "Roboto", "DDC Uchen", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-serif: "Times New Roman", "Times New Roman Cert", Times, serif;
+  --font-dz: "DDC Uchen", "Roboto", sans-serif;
+
+  /* Brand colours */
+  --color-navy: #002f6c; /* primary */
+  --color-navy-tint: #144078; /* primary hover, active sidebar item */
+  --color-navy-tone: #0a356e;
+  --color-navy-shade: #002b63; /* primary pressed */
+  --color-orange: #f68d2e; /* accent — markers, underlines, progress, CTA fill */
+  --color-orange-tint: #f7963f;
+  --color-orange-tone: #ed8c35;
+  --color-orange-shade: #e2822a; /* accent hover */
+  --color-yellow: #ffe900; /* tiny details only: a dot, a thin line */
+  --color-yellow-tint: #ffeb14;
+  --color-yellow-tone: #f5e10a;
+  --color-yellow-shade: #ebd600;
+  --color-jet: #000000;
+  --color-ink: #2b2b2b; /* body text */
+  --color-midgray: #5a5a5a; /* lightest allowed secondary text */
+  --color-lightgray: #d9dee6; /* card borders, dividers */
+  --color-page: #f4f6f9; /* page background */
+
+  /* "brand" = navy, used by links, focus and primary actions in every portal */
+  --color-brand-50: #eef2f8;
+  --color-brand-100: #dce4f0;
+  --color-brand-200: #b9c8de;
+  --color-brand-300: #7f97bb;
+  --color-brand-400: #144078;
+  --color-brand-500: #144078;
+  --color-brand-600: #002f6c;
+  --color-brand-700: #002b63;
+  --color-brand-800: #0a356e;
+  --color-brand-900: #002b63;
+  --color-accent-500: #f68d2e;
+
+  /* Neutral scale used by all components (contrast-checked on white):
+     400 ≈ 4.8:1 (hints, icons), 500 = #5A5A5A (secondary), 700 = body, 900 = headings (navy). */
+  --color-slate-50: #f4f6f9;
+  --color-slate-100: #edf0f4;
+  --color-slate-200: #d9dee6;
+  --color-slate-300: #8a94a5;
+  --color-slate-400: #6b7280;
+  --color-slate-500: #5a5a5a;
+  --color-slate-600: #474747;
+  --color-slate-700: #2b2b2b;
+  --color-slate-800: #1f2937;
+  --color-slate-900: #002f6c;
+  --color-slate-950: #001f47;
+
+  /* Status colours (always shown with an icon and a text label) */
+  --color-emerald-500: #1e7a3c;
+  --color-emerald-600: #1e7a3c;
+  --color-emerald-700: #1e7a3c;
+  --color-emerald-800: #17602f;
+  --color-emerald-900: #114a24;
+  --color-red-500: #b3261e;
+  --color-red-600: #b3261e;
+  --color-red-700: #b3261e;
+  --color-red-800: #8c1d17;
+  --color-red-900: #6b1611;
+  --color-amber-700: #7a4a00;
+  --color-amber-800: #5f3a00;
+  --color-amber-900: #4a2d00;
+
+  /* Editor */
+  --color-canvas: #e3e7ed;
+
+  /* Radii and shadows */
+  --radius-card: 12px;
+  --radius-control: 8px;
+  --shadow-card: 0 1px 2px rgb(0 47 108 / 0.06), 0 1px 3px rgb(0 47 108 / 0.06);
+  --shadow-float: 0 10px 30px rgb(0 47 108 / 0.16);
+}
+
+/* Semantic tokens for places outside Tailwind classes. */
+:root {
+  --page-bg: var(--color-page);
+  --card-bg: #ffffff;
+  --border: var(--color-lightgray);
+  --border-strong: #8a94a5;
+  --heading: var(--color-navy);
+  --text: var(--color-ink);
+  --text-muted: var(--color-midgray);
+  --focus-ring: var(--color-orange);
+  --table-head-bg: var(--color-navy);
+  --table-head-text: #ffffff;
+  --handle: var(--color-orange);
+  --guide: var(--color-orange);
+  --smart-line: #002f6c;
+  /* Spacing */
+  --space-page-x: 2rem;
+  --space-page-y: 2rem;
+  --space-card: 1.25rem;
+}
+
+/* ---------------------------------------------------------------- type scale */
+@utility text-display { font-size: 44px; line-height: 1.1; font-weight: 700; }
+@utility text-h1 { font-size: 28px; line-height: 1.2; font-weight: 700; }
+@utility text-h2 { font-size: 21px; line-height: 1.3; font-weight: 700; }
+@utility text-h3 { font-size: 17px; line-height: 1.4; font-weight: 500; }
+@utility font-dz { font-family: var(--font-dz); }
+@utility shadow-card { box-shadow: var(--shadow-card); }
+@utility shadow-float { box-shadow: var(--shadow-float); }
+@utility rounded-card { border-radius: var(--radius-card); }
+
+/* ---------------------------------------------------------------- tables
+   Navy header row with white text; white rows with light dividers. */
+table thead,
+table thead tr,
+table thead th {
+  background-color: var(--table-head-bg);
+  color: var(--table-head-text);
+}
+table thead th { border-color: transparent; }
+
+/* ---------------------------------------------------------------- navy surfaces
+   Sidebar and editor panels: navy with white text. Inside .navy-panel the
+   neutral scale is remapped so every control keeps its contrast. */
+.navy-panel {
+  --color-slate-50: #0a356e;
+  --color-slate-100: #144078;
+  --color-slate-200: #2a5089;
+  --color-slate-300: #7d97bf; /* borders ≥ 3:1 on navy */
+  --color-slate-400: #a9bbd6;
+  --color-slate-500: #c3d0e3;
+  --color-slate-600: #dbe3ef;
+  --color-slate-700: #eef2f8;
+  --color-slate-800: #f7f9fc;
+  --color-slate-900: #ffffff;
+  --color-brand-50: #144078;
+  --color-brand-100: #2a5089;
+  --color-brand-200: #3b5f95;
+  background-color: #002f6c;
+  color: #ffffff;
+}
+.navy-panel .bg-white { background-color: #002f6c; }
+.navy-panel input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
+.navy-panel textarea,
+.navy-panel select { background-color: #0a356e; color: #ffffff; border-color: #7d97bf; }
+.navy-panel input::placeholder, .navy-panel textarea::placeholder { color: #a9bbd6; }
+/* Small labels and active states may be orange on navy. */
+.navy-panel .text-brand-700, .navy-panel .text-brand-800, .navy-panel .text-brand-600 { color: #f7963f; }
+/* Controls that are navy on white become orange (with navy text) on navy. */
+.navy-panel .bg-navy, .navy-panel .bg-brand-600 { background-color: #f68d2e; color: #002f6c; }
+.navy-panel .hover\:bg-navy-shade:hover { background-color: #e2822a; }
+.navy-panel [role="radio"][aria-checked="true"] { background-color: #ffffff; color: #002f6c; }
+.navy-panel .ring-brand-400, .navy-panel .border-brand-400 { --tw-ring-color: #f68d2e; border-color: #f68d2e; }
+.navy-panel table thead, .navy-panel table thead th { background-color: #0a356e; }
+/* Light islands inside navy panels (e.g. upload zones) keep the light palette. */
+.light-surface {
+  --color-slate-50: #f4f6f9; --color-slate-100: #edf0f4; --color-slate-200: #d9dee6; --color-slate-300: #8a94a5;
+  --color-slate-400: #6b7280; --color-slate-500: #5a5a5a; --color-slate-600: #474747; --color-slate-700: #2b2b2b;
+  --color-slate-800: #1f2937; --color-slate-900: #002f6c;
+  --color-brand-50: #eef2f8; --color-brand-100: #dce4f0; --color-brand-200: #b9c8de;
+}
+.navy-panel .light-surface.bg-white { background-color: #ffffff; }
+
+/* Certificate artwork and previews are paper: never dimmed. */
+.paper { background-color: #ffffff; color: #111827; }

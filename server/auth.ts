@@ -3,7 +3,14 @@ import type { NextFunction, Request, Response } from 'express';
 import { db, newId, now } from './db.ts';
 import type { PublicUser, Role } from '../shared/types.ts';
 
-const SESSION_COOKIE = 'cg_session';
+/** Old single cookie (before each portal had its own); still read, then replaced. */
+const LEGACY_COOKIE = 'cg_session';
+const ROLES: Role[] = ['superadmin', 'admin', 'user'];
+/**
+ * Each portal keeps its own session cookie, so signing in to one portal never
+ * signs you out of another open in the same browser.
+ */
+const cookieFor = (role: Role) => `cg_session_${role}`;
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const SCRYPT_N = 16384;
 const SCRYPT_r = 8;
@@ -56,6 +63,7 @@ interface UserRow {
   active: number;
   created_at: number;
   last_login_at: number | null;
+  avatar_file_id?: string | null;
 }
 
 export function toPublicUser(row: UserRow): PublicUser {
@@ -68,6 +76,7 @@ export function toPublicUser(row: UserRow): PublicUser {
     active: !!row.active,
     createdAt: row.created_at,
     lastLoginAt: row.last_login_at,
+    avatarFileId: row.avatar_file_id ?? null,
   };
 }
 
@@ -116,12 +125,40 @@ function isSecureRequest(req: Request): boolean {
   return req.secure || req.headers['x-forwarded-proto'] === 'https' || process.env.COOKIE_SECURE === 'true';
 }
 
+/** Which portal a request comes from: X-Portal header, ?portal=, the API area, or the page that made it. */
+function portalOf(req: Request): Role | null {
+  const isRole = (v: unknown): v is Role => typeof v === 'string' && (ROLES as string[]).includes(v);
+  const header = req.get('x-portal');
+  if (isRole(header)) return header;
+  if (isRole(req.query?.portal)) return req.query.portal as Role;
+  const url = req.originalUrl || req.url;
+  if (url.startsWith('/api/superadmin')) return 'superadmin';
+  if (url.startsWith('/api/admin')) return 'admin';
+  if (url.startsWith('/api/user') || url.startsWith('/api/integrations')) return 'user';
+  const ref = req.get('referer');
+  if (ref) {
+    try {
+      const u = new URL(ref);
+      if (u.host === req.get('host')) {
+        if (u.pathname === '/superadmin' || u.pathname.startsWith('/superadmin/')) return 'superadmin';
+        if (u.pathname === '/admin' || u.pathname.startsWith('/admin/')) return 'admin';
+        return 'user';
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  return null;
+}
+
 export async function startSession(req: Request, res: Response, userId: string) {
   const token = crypto.randomBytes(32).toString('base64url');
   const t = now();
+  const role = (await db.one<{ role: Role }>('SELECT role FROM users WHERE id = ?', [userId]))!.role;
   await db.run('INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)', [sha256(token), userId, t, t + SESSION_TTL_MS]);
   await db.run('UPDATE users SET last_login_at = ? WHERE id = ?', [t, userId]);
-  res.cookie(SESSION_COOKIE, token, {
+  if (readCookie(req, LEGACY_COOKIE)) res.clearCookie(LEGACY_COOKIE, { path: '/' });
+  res.cookie(cookieFor(role), token, {
     httpOnly: true,
     sameSite: 'lax',
     secure: isSecureRequest(req),
@@ -130,10 +167,13 @@ export async function startSession(req: Request, res: Response, userId: string) 
   });
 }
 
-export async function endSession(req: Request, res: Response) {
-  const token = readCookie(req, SESSION_COOKIE);
+/** Signs out of the portal this request comes from (other portals stay signed in). */
+export async function endSession(req: AuthedRequest, res: Response) {
+  const name = req.sessionCookie || (portalOf(req) ? cookieFor(portalOf(req)!) : null);
+  if (!name) return;
+  const token = readCookie(req, name);
   if (token) await db.run('DELETE FROM sessions WHERE token_hash = ?', [sha256(token)]);
-  res.clearCookie(SESSION_COOKIE, { path: '/' });
+  res.clearCookie(name, { path: '/' });
 }
 
 export async function endAllSessionsForUser(userId: string) {
@@ -154,27 +194,38 @@ function readCookie(req: Request, name: string): string | null {
 export interface AuthedRequest extends Request {
   user?: PublicUser;
   sessionTokenHash?: string;
+  /** Name of the cookie that carried the session. */
+  sessionCookie?: string;
 }
 
 /** Attaches req.user when a valid session cookie is present. */
 export function sessionMiddleware(req: AuthedRequest, _res: Response, next: NextFunction) {
-  const token = readCookie(req, SESSION_COOKIE);
-  if (!token) return next();
-  const hash = sha256(token);
+  const portal = portalOf(req);
+  // The portal's own cookie; when the portal is unknown (e.g. an image), any of them.
+  const names = [...(portal ? [cookieFor(portal)] : ROLES.map(cookieFor)), LEGACY_COOKIE];
+  const candidates = names.map((name) => ({ name, token: readCookie(req, name) })).filter((c) => c.token);
+  if (!candidates.length) return next();
   (async () => {
-    const row = await db.one<UserRow & { expires_at: number }>(
-      'SELECT s.expires_at, u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?',
-      [hash]
-    );
-    if (row && row.expires_at > now() && row.active) {
-      req.user = toPublicUser(row);
-      req.sessionTokenHash = hash;
-      // Sliding expiry: extend when less than half the lifetime remains.
-      if (row.expires_at - now() < SESSION_TTL_MS / 2) {
-        await db.run('UPDATE sessions SET expires_at = ? WHERE token_hash = ?', [now() + SESSION_TTL_MS, hash]);
+    for (const { name, token } of candidates) {
+      const hash = sha256(token!);
+      const row = await db.one<UserRow & { expires_at: number }>(
+        'SELECT s.expires_at, u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?',
+        [hash]
+      );
+      if (row && row.expires_at > now() && row.active) {
+        // The old shared cookie only counts for its own portal.
+        if (name === LEGACY_COOKIE && portal && row.role !== portal) continue;
+        req.user = toPublicUser(row);
+        req.sessionTokenHash = hash;
+        req.sessionCookie = name;
+        // Sliding expiry: extend when less than half the lifetime remains.
+        if (row.expires_at - now() < SESSION_TTL_MS / 2) {
+          await db.run('UPDATE sessions SET expires_at = ? WHERE token_hash = ?', [now() + SESSION_TTL_MS, hash]);
+        }
+        return;
+      } else if (row) {
+        await db.run('DELETE FROM sessions WHERE token_hash = ?', [hash]);
       }
-    } else if (row) {
-      await db.run('DELETE FROM sessions WHERE token_hash = ?', [hash]);
     }
   })().then(() => next(), next);
 }
@@ -184,10 +235,10 @@ export function requireAuth(req: AuthedRequest, res: Response, next: NextFunctio
   next();
 }
 
-export function requireRole(role: Role) {
+export function requireRole(...roles: Role[]) {
   return (req: AuthedRequest, res: Response, next: NextFunction) => {
     if (!req.user) return res.status(401).json({ error: 'Please sign in.' });
-    if (req.user.role !== role) return res.status(403).json({ error: 'You do not have access to this area.' });
+    if (!roles.includes(req.user.role)) return res.status(403).json({ error: 'You do not have access to this area.' });
     next();
   };
 }

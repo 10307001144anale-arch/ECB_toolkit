@@ -9,6 +9,14 @@ export class ApiError extends Error {
   }
 }
 
+/** The portal of the page that is open (each portal has its own session). */
+export function currentPortal(): 'superadmin' | 'admin' | 'user' {
+  const p = window.location.pathname;
+  if (p === '/superadmin' || p.startsWith('/superadmin/')) return 'superadmin';
+  if (p === '/admin' || p.startsWith('/admin/')) return 'admin';
+  return 'user';
+}
+
 type Listener = () => void;
 const unauthorisedListeners = new Set<Listener>();
 export function onUnauthorised(fn: Listener) {
@@ -17,7 +25,7 @@ export function onUnauthorised(fn: Listener) {
 }
 
 async function request<T>(method: string, url: string, body?: unknown, init: RequestInit = {}): Promise<T> {
-  const headers: Record<string, string> = { 'X-Requested-With': 'certigen' };
+  const headers: Record<string, string> = { 'X-Requested-With': 'certigen', 'X-Portal': currentPortal() };
   let payload: BodyInit | undefined;
   if (body instanceof Blob || body instanceof ArrayBuffer) {
     payload = body as BodyInit;
@@ -57,7 +65,7 @@ const fileCache = new Map<string, Promise<ArrayBuffer>>();
 export function fetchFile(id: string): Promise<ArrayBuffer> {
   let p = fileCache.get(id);
   if (!p) {
-    p = fetch(`/api/files/${encodeURIComponent(id)}`, { credentials: 'same-origin' }).then(async (r) => {
+    p = fetch(`/api/files/${encodeURIComponent(id)}`, { credentials: 'same-origin', headers: { 'X-Portal': currentPortal() } }).then(async (r) => {
       if (!r.ok) throw new ApiError(r.status, 'Could not load a template file.');
       return r.arrayBuffer();
     });

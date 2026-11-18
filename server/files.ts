@@ -1,10 +1,10 @@
 import crypto from 'node:crypto';
 import { db, newId, now } from './db.ts';
-import { cacheLocally, moveObject, putObject, readCached } from './storage.ts';
+import { cacheLocally, deleteObjects, moveObject, putObject, readCached } from './storage.ts';
 import { HttpError } from './http.ts';
 import type { PublicUser, TemplateLayout } from '../shared/types.ts';
 
-export type FileKind = 'artwork' | 'reference' | 'preview' | 'signature' | 'font';
+export type FileKind = 'artwork' | 'reference' | 'preview' | 'signature' | 'font' | 'logo' | 'refimage' | 'avatar';
 
 const MAX_SIZE: Record<FileKind, number> = {
   artwork: 25 * 1024 * 1024,
@@ -12,6 +12,9 @@ const MAX_SIZE: Record<FileKind, number> = {
   preview: 15 * 1024 * 1024,
   signature: 3 * 1024 * 1024,
   font: 5 * 1024 * 1024,
+  logo: 3 * 1024 * 1024,
+  refimage: 15 * 1024 * 1024,
+  avatar: 3 * 1024 * 1024,
 };
 
 const ALLOWED: Record<FileKind, string[]> = {
@@ -20,6 +23,9 @@ const ALLOWED: Record<FileKind, string[]> = {
   preview: ['image/png', 'image/jpeg'],
   signature: ['image/png', 'image/jpeg'],
   font: ['font/ttf', 'font/otf'],
+  logo: ['image/png', 'image/jpeg'],
+  refimage: ['image/png', 'image/jpeg'],
+  avatar: ['image/png', 'image/jpeg'],
 };
 
 /** Detects the real file type from its first bytes; the browser-supplied type is not trusted. */
@@ -51,12 +57,18 @@ function folderFor(kind: FileKind, role: string | null) {
       return role === 'reference' ? 'reference/previews' : 'blank/previews';
     case 'font':
       return 'fonts';
+    case 'refimage':
+      return 'reference-image';
+    case 'logo':
+      return 'logos';
     default:
       return 'assets';
   }
 }
 
 export function objectPath(templateId: string | null, kind: FileKind, role: string | null, id: string, mime: string) {
+  if (kind === 'logo') return `clients/logos/${id}.${EXT[mime] || 'bin'}`;
+  if (kind === 'avatar') return `users/avatars/${id}.${EXT[mime] || 'bin'}`;
   return `templates/${templateId || '_unassigned'}/${folderFor(kind, role)}/${id}.${EXT[mime] || 'bin'}`;
 }
 
@@ -152,21 +164,30 @@ export function layoutFileIds(layout: TemplateLayout): Set<string> {
   return ids;
 }
 
+/** Every published template is available to every User. */
+export const PUBLISHED = `t.status = 'published'`;
+
 /**
- * Admins can read every file. Clients can read a file only if it belongs to a
- * template version they are allowed to use (current published version, or a
- * version used by one of their own batches).
+ * Super Admins and Admins can read every file. Users can read a file only if
+ * it belongs to a template version they are allowed to use (current published
+ * version, or a version used by one of their own batches), is the sample
+ * reference image of such a template, or is the logo of a client they belong to.
  */
 export async function canReadFile(user: PublicUser, fileId: string): Promise<boolean> {
-  if (user.role === 'admin') return true;
+  if (user.role === 'superadmin' || user.role === 'admin') return true;
+  const special = await db.one(
+    `SELECT 1 FROM templates t WHERE t.reference_image_file_id = ? AND ${PUBLISHED}
+     UNION SELECT 1 FROM users u WHERE (u.logo_file_id = ? OR u.avatar_file_id = ?) AND u.id = ?`,
+    [fileId, fileId, fileId, user.id]
+  );
+  if (special) return true;
   const rows = await db.all<{ layout_json: string }>(
     `SELECT v.layout_json FROM templates t
        JOIN template_versions v ON v.id = t.current_version_id
-      WHERE t.status = 'published'
-        AND (t.visibility = 'all' OR EXISTS (SELECT 1 FROM template_access a WHERE a.template_id = t.id AND a.client_id = ?))
+      WHERE ${PUBLISHED}
      UNION
      SELECT v.layout_json FROM batches b JOIN template_versions v ON v.id = b.template_version_id WHERE b.client_id = ?`,
-    [user.id, user.id]
+    [user.id]
   );
   for (const r of rows) {
     if (!r.layout_json.includes(fileId)) continue;
@@ -176,4 +197,12 @@ export async function canReadFile(user: PublicUser, fileId: string): Promise<boo
     if (layoutFileIds(layout).has(fileId)) return true;
   }
   return false;
+}
+
+/** Removes one stored file (record and object), e.g. a replaced profile photo. */
+export async function deleteFileRecord(id: string): Promise<void> {
+  const f = await db.one<{ storage_path: string }>('SELECT storage_path FROM files WHERE id = ?', [id]);
+  if (!f) return;
+  await db.run('DELETE FROM files WHERE id = ?', [id]);
+  await deleteObjects([f.storage_path]).catch((e) => console.warn('[storage] cleanup failed:', e.message));
 }

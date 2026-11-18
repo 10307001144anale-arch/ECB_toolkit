@@ -58,18 +58,24 @@ export function matchPath(pattern: string, path: string): Record<string, string>
   return params;
 }
 
-export function Link({ to, className, children, ...rest }: React.AnchorHTMLAttributes<HTMLAnchorElement> & { to: string }) {
+/**
+ * In-app link: navigates without reloading the page. A caller's own onClick
+ * runs first (it must never replace the in-app navigation).
+ */
+export function Link({ to, className, children, onClick, target, ...rest }: React.AnchorHTMLAttributes<HTMLAnchorElement> & { to: string }) {
   const { navigate } = useRouter();
   return (
     <a
+      {...rest}
       href={to}
+      target={target}
       className={className}
       onClick={(e) => {
-        if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey) return;
+        onClick?.(e);
+        if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || (target && target !== '_self')) return;
         e.preventDefault();
         navigate(to);
       }}
-      {...rest}
     >
       {children}
     </a>
