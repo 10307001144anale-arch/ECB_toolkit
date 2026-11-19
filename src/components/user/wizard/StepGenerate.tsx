@@ -256,7 +256,7 @@ export function StepGenerate({ w, d, set, onNewBatch }: StepProps & { onNewBatch
         {o.result.failures.length > 0 && (
           <div className="mt-6">
             <h3 className="mb-2 text-sm font-semibold text-red-700">Failed certificates</h3>
-            <ul className="max-h-48 divide-y divide-slate-100 overflow-y-auto rounded-lg border border-red-200 text-sm">
+            <ul className="max-h-[50vh] divide-y divide-slate-100 overflow-y-auto rounded-lg border border-red-200 text-sm">
               {o.result.failures.map((f) => (
                 <li key={f.position} className="px-3 py-2">
                   Row {f.rowIndex + 1}: <span className="text-slate-600">{f.message}</span>
@@ -331,7 +331,7 @@ export function FilesModal({ batchId, onClose, onEdit }: { batchId: string; onCl
       ) : files.length === 0 ? (
         <p className="text-sm text-slate-500">No files are stored on this device for this batch.</p>
       ) : (
-        <ul className="max-h-[55vh] divide-y divide-slate-100 overflow-y-auto rounded-lg border border-slate-200">
+        <ul className="max-h-[70vh] divide-y divide-slate-100 overflow-y-auto rounded-lg border border-slate-200">
           {shown.slice(0, 500).map((f) => (
             <li key={f.id} className="flex items-center justify-between gap-3 px-3 py-2 text-sm">
               <span className="min-w-0 flex-1 truncate">{f.fileName}</span>

@@ -129,7 +129,7 @@ export function StepPreview({ w, d, set, goTo }: StepProps) {
       )}
 
       <div className="grid gap-6 lg:grid-cols-5">
-        <Card className="flex flex-col lg:col-span-2" style={{ maxHeight: '75vh' }}>
+        <Card className="flex min-h-[24rem] flex-col lg:col-span-2" style={{ maxHeight: 'max(85vh, 32rem)' }}>
           <div className="space-y-3 border-b border-slate-100 p-3">
             <Segmented
               size="sm"

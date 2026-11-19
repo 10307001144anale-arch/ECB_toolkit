@@ -333,7 +333,7 @@ export const RichTextEditor = forwardRef<
           suppressContentEditableWarning
           spellCheck
           className="paper w-full overflow-y-auto whitespace-pre-wrap break-words rounded-b-lg px-3 py-2 text-sm outline-none"
-          style={{ minHeight: `${minRows * 1.6 + 1}rem`, maxHeight: '18rem', ...baseStyle }}
+          style={{ minHeight: `${Math.max(minRows, singleLine ? 1 : 3) * 1.6 + 1}rem`, maxHeight: singleLine ? undefined : 'min(65vh, 40rem)', ...baseStyle }}
           onInput={emit}
           onBlur={() => {
             saveRange();

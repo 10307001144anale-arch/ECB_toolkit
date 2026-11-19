@@ -5,7 +5,7 @@
 import React from 'react';
 import { cx } from './ui';
 
-export const ECB_NAME_DZ = 'འབྲུག་གི་འདེམས་བསྐོ་ལྷན་ཚོགས།';
+export const ECB_NAME_DZ = 'འབྲུག་གི་བཙག་འཐུ་ལྷན་ཚོགས།';
 export const ECB_NAME_EN = 'Election Commission of Bhutan';
 export const ECB_TAGLINE = 'Ensuring Free, Fair and Democratic Elections and Referendums';
 export const ECB_URL = 'https://www.ecb.bt';

@@ -23,7 +23,7 @@ function Frame({ portal, title, children }: { portal: PortalId; title: string; c
     document.title = `${title} · CertiGen · ECB`;
   }, [title]);
   return (
-    <div className="relative flex min-h-screen flex-col items-center bg-white px-4 pb-28 pt-12">
+    <div className="relative flex min-h-screen flex-col items-center justify-center bg-white px-4 pb-28 pt-12">
       <HeaderLockup size={52} />
       <div className="mt-8 w-full max-w-md">
         <PortalBadge portal={portal} />

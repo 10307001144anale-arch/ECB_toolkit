@@ -172,7 +172,7 @@ export function CloudPanel({ provider, onImported }: { provider: CloudProvider; 
                   Search
                 </Button>
               </form>
-              <div className="max-h-64 divide-y divide-slate-100 overflow-y-auto rounded-lg border border-slate-200">
+              <div className="max-h-[60vh] divide-y divide-slate-100 overflow-y-auto rounded-lg border border-slate-200">
                 {busy === 'search' && !files ? (
                   <Spinner />
                 ) : !files || files.length === 0 ? (
