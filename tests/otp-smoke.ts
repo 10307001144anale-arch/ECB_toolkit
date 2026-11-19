@@ -8,10 +8,13 @@
 // Run (see README → Testing):
 //   OTP_CAPTURE_PORT=55498 SMOKE_DB_URL=postgresql://… SMOKE_SERVER_LOG=server.log \
 //   node tests/otp-smoke.ts http://localhost:3996
-// with the server started with SMTP_HOST=127.0.0.1 SMTP_PORT=55498 (no SMTP_USER)
+// with the server started with SMTP_HOST=127.0.0.1 SMTP_PORT=55498 (no SMTP_USER),
+// or, to test the Brevo API path, BREVO_API_KEY=test BREVO_API_URL=http://127.0.0.1:55499/v3/smtp/email,
+// or the Gmail relay path, GMAIL_RELAY_URL=http://127.0.0.1:55499/relay GMAIL_RELAY_SECRET=relay-test-secret-0123456789
 
 import assert from 'node:assert/strict';
 import net from 'node:net';
+import http from 'node:http';
 import { readFileSync } from 'node:fs';
 import pg from 'pg';
 
@@ -76,6 +79,46 @@ const receiver = net.createServer((sock) => {
   });
 });
 await new Promise<void>((r) => receiver.listen(CAPTURE_PORT, '127.0.0.1', r));
+// The same inbox behind a Brevo-style HTTPS API (POST /v3/smtp/email), on the next port.
+// Gmail relay stand-in: answers like Google Apps Script (302 to a result URL, then JSON with HTTP 200).
+const relayResults = new Map<string, string>();
+const brevo = http.createServer((req, res) => {
+  let body = '';
+  req.on('data', (c) => (body += c));
+  req.on('end', () => {
+    if (req.url?.startsWith('/relay-result/')) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(relayResults.get(req.url.slice('/relay-result/'.length)) || '{"ok":false,"error":"gone"}');
+    }
+    if (req.url === '/relay') {
+      const d = JSON.parse(body || '{}');
+      const to = String(d.to || '').toLowerCase();
+      let out: any = { ok: true };
+      if (d.secret !== 'relay-test-secret-0123456789') out = { ok: false, error: 'unauthorized' };
+      else if (!String(d.subject).includes('ECB CertiGen')) out = { ok: false, error: 'subject not allowed' };
+      else if (to.startsWith('fail')) out = { ok: false, error: 'Simulated delivery failure' };
+      else inbox.push({ to, subject: d.subject, html: d.html, text: d.text });
+      const id = String(relayResults.size + 1);
+      relayResults.set(id, JSON.stringify(out));
+      res.writeHead(302, { location: `/relay-result/${id}` });
+      return res.end();
+    }
+    const m = JSON.parse(body || '{}');
+    const to = String(m.to?.[0]?.email || '').toLowerCase();
+    if (req.headers['api-key'] !== 'test') {
+      res.writeHead(401, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ code: 'unauthorized', message: 'Key not found' }));
+    }
+    if (to.startsWith('fail')) {
+      res.writeHead(400, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ code: 'invalid_parameter', message: 'Simulated delivery failure' }));
+    }
+    inbox.push({ to, subject: m.subject, html: m.htmlContent, text: m.textContent });
+    res.writeHead(201, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ messageId: `<${inbox.length}@test>` }));
+  });
+});
+await new Promise<void>((r) => brevo.listen(CAPTURE_PORT + 1, '127.0.0.1', r));
 const mailsTo = (to: string) => inbox.filter((m) => m.to === to);
 /** Email goes out just after the API answers: wait until `to` has `count` emails (or give up). */
 const waitForMail = async (to: string, count: number) => {
@@ -329,4 +372,5 @@ try {
 } finally {
   await db.end();
   receiver.close();
+  brevo.close();
 }

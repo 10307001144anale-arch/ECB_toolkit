@@ -28,6 +28,12 @@ services:
         sync: false
       - key: APP_URL
         sync: false            # e.g. https://certigen.onrender.com (used in emails)
+      - key: GMAIL_RELAY_URL
+        sync: false            # Google Apps Script relay Web app URL (…/exec) — free plan blocks email ports
+      - key: GMAIL_RELAY_SECRET
+        sync: false            # same value as RELAY_SECRET in the script's Script Properties
+      - key: BREVO_API_KEY
+        sync: false            # free plan blocks email ports: send through Brevo (delete on paid plans to use Gmail)
       - key: SMTP_HOST
         value: smtp.gmail.com  # forgot-password codes are sent through Gmail
       - key: SMTP_PORT
