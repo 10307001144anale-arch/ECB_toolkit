@@ -27,7 +27,7 @@ const ok = await sendMail(
 console.log(
   ok
     ? `Sent. Check the inbox (and spam folder) of ${to}.`
-    : 'Sending failed — see the [mail] message above. Check RESEND_API_KEY / MAIL_FROM (or the SMTP_* settings).'
+    : 'Sending failed — see the [mail] message above. Check SMTP_USER and SMTP_PASSWORD (for Gmail: an App password, and MAIL_FROM with the same address).'
 );
 // Let Node exit on its own: process.exit() while the network handles close crashes libuv on Windows.
 process.exitCode = ok ? 0 : 1;

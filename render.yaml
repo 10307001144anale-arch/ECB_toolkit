@@ -28,7 +28,13 @@ services:
         sync: false
       - key: APP_URL
         sync: false            # e.g. https://certigen.onrender.com (used in emails)
-      - key: RESEND_API_KEY
-        sync: false            # Resend → API Keys (forgot-password codes)
+      - key: SMTP_HOST
+        value: smtp.gmail.com  # forgot-password codes are sent through Gmail
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USER
+        sync: false            # the sending Gmail address
+      - key: SMTP_PASSWORD
+        sync: false            # its 16-letter App password (no spaces)
       - key: MAIL_FROM
-        sync: false            # e.g. ECB CertiGen <no-reply@your-verified-domain>
+        sync: false            # ECB CertiGen <same Gmail as SMTP_USER>

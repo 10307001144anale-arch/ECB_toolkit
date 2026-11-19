@@ -1,63 +1,48 @@
-// Outgoing email (password reset codes). Two delivery options, chosen by .env:
-//   1. Resend (recommended): RESEND_API_KEY and MAIL_FROM (a sender on a domain
-//      verified in Resend, e.g. "CertiGen <no-reply@your-domain>").
-//   2. SMTP: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD and MAIL_FROM.
+// Outgoing email (password reset codes), sent through an SMTP mailbox —
+// normally Gmail with an App password:
+//   SMTP_HOST="smtp.gmail.com"  SMTP_PORT="587"
+//   SMTP_USER="sender@gmail.com"  SMTP_PASSWORD="<16-letter app password>"
+//   MAIL_FROM="ECB CertiGen <sender@gmail.com>"   (same address as SMTP_USER)
 // Message bodies are never written to the logs (they contain one-time codes).
 
 import nodemailer, { type Transporter } from 'nodemailer';
-import { Resend } from 'resend';
-
-export type MailProvider = 'resend' | 'smtp' | null;
-
-export function mailProvider(): MailProvider {
-  if (process.env.RESEND_API_KEY) return 'resend';
-  if (process.env.SMTP_HOST) return 'smtp';
-  return null;
-}
 
 export function mailConfigured(): boolean {
-  return mailProvider() !== null;
+  return !!process.env.SMTP_HOST;
 }
 
 function sender(): string {
-  return process.env.MAIL_FROM || process.env.SMTP_USER || 'ECB CertiGen <onboarding@resend.dev>';
+  const user = process.env.SMTP_USER;
+  return process.env.MAIL_FROM || (user ? `ECB CertiGen <${user}>` : 'ECB CertiGen <no-reply@localhost>');
 }
 
-let resend: Resend | null = null;
 let transport: Transporter | null = null;
 
-async function sendWithResend(to: string, subject: string, text: string, html: string) {
-  resend ??= new Resend(process.env.RESEND_API_KEY);
-  const { error } = await resend.emails.send({ from: sender(), to: [to], subject, text, html });
-  if (error) throw new Error(`${error.name}: ${error.message}`);
-}
-
-async function sendWithSmtp(to: string, subject: string, text: string, html: string) {
+function getTransport(): Transporter {
   if (!transport) {
     const port = Number(process.env.SMTP_PORT || 587);
     transport = nodemailer.createTransport({
       host: process.env.SMTP_HOST,
       port,
       secure: process.env.SMTP_SECURE ? process.env.SMTP_SECURE === 'true' : port === 465,
-      auth: process.env.SMTP_USER ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASSWORD || '' } : undefined,
+      auth: process.env.SMTP_USER ? { user: process.env.SMTP_USER, pass: (process.env.SMTP_PASSWORD || '').replace(/\s+/g, '') } : undefined,
     });
   }
-  await transport.sendMail({ from: sender(), to, subject, text, html });
+  return transport;
 }
 
 /** Sends one email. Returns false (and logs the reason, never the content) when it could not be sent. */
 export async function sendMail(to: string, subject: string, text: string, html: string): Promise<boolean> {
-  const provider = mailProvider();
-  if (!provider) {
-    console.warn(`[mail] Email is not configured (set RESEND_API_KEY or SMTP_HOST); "${subject}" was not sent.`);
+  if (!mailConfigured()) {
+    // Never log the subject or body: they contain the one-time code.
+    console.warn('[mail] Email is not configured (set SMTP_HOST, SMTP_USER and SMTP_PASSWORD); an email was not sent.');
     return false;
   }
   try {
-    if (provider === 'resend') await sendWithResend(to, subject, text, html);
-    else await sendWithSmtp(to, subject, text, html);
+    await getTransport().sendMail({ from: sender(), to, subject, text, html });
     return true;
   } catch (e: any) {
-    console.warn(`[mail] ${provider} could not send "${subject}": ${e.message}`);
+    console.warn(`[mail] could not send an email: ${String(e.message).replace(/\d{6}/g, '******')}`);
     return false;
   }
 }

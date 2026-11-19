@@ -181,7 +181,7 @@ Each generated certificate gets a unique ID (e.g. `CG-7K3M-9QX2-PL4D`) stored in
 - Login throttling (8 failures per 15 minutes per IP + email).
 - **My profile** (all portals, sidebar → My profile): profile photo, name, sign-in email (needs the current password) and password.
 - **Forgot password** (link on every sign-in page, all three portals): email → 6-digit code → new password.
-  - The code is emailed with **Resend** (`RESEND_API_KEY`, `MAIL_FROM`; SMTP also works). It is generated with `crypto.randomInt`, stored only as an HMAC-SHA256 (keyed with `APP_SECRET`), expires after **5 minutes**, works **once**, and is locked after **5 wrong tries**. A new code replaces the old one; **Resend code** has a 60-second cooldown.
+  - The code is emailed through **Gmail** (or any SMTP mailbox): `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD` (a Gmail App password) and `MAIL_FROM` — see `.env.example`. It is generated with `crypto.randomInt`, stored only as an HMAC-SHA256 (keyed with `APP_SECRET`), expires after **5 minutes**, works **once**, and is locked after **5 wrong tries**. A new code replaces the old one; **Resend code** has a 60-second cooldown.
   - A correct code is exchanged for a **10-minute reset token** (random 256-bit, SHA-256 stored). The new password must have 10+ characters with letters and numbers and match the confirmation; it is hashed with scrypt like every password. Afterwards every code, token and link of the account stops working and all its sessions end.
   - Anti-abuse: the same answer whether or not the email has an account; 30 requests/hour per IP and 5 per email; 30 code checks per 15 minutes per IP and 10 per email; codes never appear in API responses or logs.
   - **Inbox ownership is required, for every role.** The account is found by its registered email in `users` (case-insensitive) and the code goes only to that stored address — recipient, role or id fields sent by the browser are ignored. There is no other self-service way in: without working email (or when delivery fails) nothing is sent and nobody else is asked to approve it.
@@ -317,12 +317,12 @@ npm run test:api                              # in a second terminal
 
 The first account (`ADMIN_EMAIL`) is the **Super Admin**; the test creates an Admin, Users and Activities itself.
 
-Forgot password with emailed codes (33 checks: delivery, hashing, expiry, single use, resend cooldown, wrong-code lock, rate limits, delivery failure, every role, registered email only, email change and deactivation, no codes in logs). The server uses the real Resend SDK; `RESEND_BASE_URL` points it at a small receiver inside the test that reads the email like an inbox:
+Forgot password with emailed codes (33 checks: delivery, hashing, expiry, single use, resend cooldown, wrong-code lock, rate limits, delivery failure, every role, registered email only, email change and deactivation, no codes in logs). The server sends real SMTP (as with Gmail); `SMTP_HOST`/`SMTP_PORT` point it at a small mail server inside the test that reads the email like an inbox:
 
 ```bash
 # fresh, empty test database
 API_ONLY=true PORT=3999 ADMIN_EMAIL=admin@test.local ADMIN_PASSWORD=AdminPass123 \
-  RESEND_API_KEY=re_test RESEND_BASE_URL=http://localhost:55498 npx tsx server.ts > server.log
+  SMTP_HOST=127.0.0.1 SMTP_PORT=55498 npx tsx server.ts > server.log
 OTP_CAPTURE_PORT=55498 SMOKE_DB_URL="$SUPABASE_DB_URL" SMOKE_SERVER_LOG=server.log npm run test:otp
 ```
 

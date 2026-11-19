@@ -1,16 +1,17 @@
 // End-to-end test of "Forgot password" with emailed verification codes.
 //
-// The server under test uses the real Resend SDK; RESEND_BASE_URL points it at
-// the small receiver below, which plays the part of Resend's API and an inbox
-// so the test can read the code exactly as a person would read the email.
+// The server under test sends email exactly as in production (nodemailer over
+// SMTP, as with Gmail). SMTP_HOST/SMTP_PORT point it at the small mail server
+// below, which accepts the messages like an inbox so the test can read the
+// code exactly as a person would read the email.
 //
 // Run (see README → Testing):
 //   OTP_CAPTURE_PORT=55498 SMOKE_DB_URL=postgresql://… SMOKE_SERVER_LOG=server.log \
 //   node tests/otp-smoke.ts http://localhost:3996
-// with the server started with RESEND_API_KEY=re_test RESEND_BASE_URL=http://localhost:55498
+// with the server started with SMTP_HOST=127.0.0.1 SMTP_PORT=55498 (no SMTP_USER)
 
 import assert from 'node:assert/strict';
-import http from 'node:http';
+import net from 'node:net';
 import { readFileSync } from 'node:fs';
 import pg from 'pg';
 
@@ -22,25 +23,59 @@ const ok = (m: string) => {
   console.log(`  ✓ ${m}`);
 };
 
-// ---------------------------------------------------------------- inbox (Resend API stand-in)
+// ---------------------------------------------------------------- inbox (a minimal SMTP server)
 type Mail = { to: string; subject: string; html: string; text: string };
 const inbox: Mail[] = [];
-const receiver = http.createServer((req, res) => {
-  let body = '';
-  req.on('data', (c) => (body += c));
-  req.on('end', () => {
-    const m = JSON.parse(body || '{}');
-    const to = Array.isArray(m.to) ? m.to[0] : m.to;
-    if (String(to).startsWith('fail')) {
-      res.writeHead(500, { 'content-type': 'application/json' });
-      return res.end(JSON.stringify({ name: 'application_error', message: 'Simulated delivery failure', statusCode: 500 }));
+/** Decodes quoted-printable so the test reads the email as a mail client shows it. */
+const unQP = (s: string) => s.replace(/=\r\n/g, '').replace(/=([0-9A-F]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+const receiver = net.createServer((sock) => {
+  let buf = '';
+  let inData = false;
+  let rcpt = '';
+  let data: string[] = [];
+  const say = (l: string) => sock.write(`${l}\r\n`);
+  say('220 test-inbox ESMTP');
+  sock.on('error', () => {});
+  sock.on('data', (chunk) => {
+    buf += chunk.toString('utf8');
+    let i: number;
+    while ((i = buf.indexOf('\r\n')) >= 0) {
+      const line = buf.slice(0, i);
+      buf = buf.slice(i + 2);
+      if (inData) {
+        if (line === '.') {
+          inData = false;
+          const raw = data.join('\r\n');
+          const body = Buffer.from(unQP(raw), 'latin1').toString('utf8');
+          inbox.push({ to: rcpt, subject: (raw.match(/^Subject: (.*)$/im) || [])[1] || '', html: body, text: body });
+          data = [];
+          say('250 OK queued');
+        } else data.push(line.startsWith('..') ? line.slice(1) : line);
+        continue;
+      }
+      const cmd = line.slice(0, 4).toUpperCase();
+      if (cmd === 'EHLO') sock.write('250-test-inbox\r\n250 8BITMIME\r\n');
+      else if (cmd === 'HELO') say('250 test-inbox');
+      else if (cmd === 'MAIL' || cmd === 'RSET' || cmd === 'NOOP') say('250 OK');
+      else if (cmd === 'RCPT') {
+        const to = ((line.match(/<([^>]+)>/) || [])[1] || '').toLowerCase();
+        // Addresses starting with "fail" are refused, like a mailbox that does not exist.
+        if (to.startsWith('fail')) say('550 Simulated delivery failure');
+        else {
+          rcpt = to;
+          say('250 OK');
+        }
+      } else if (cmd === 'DATA') {
+        inData = true;
+        say('354 End data with <CR><LF>.<CR><LF>');
+      } else if (cmd === 'QUIT') {
+        say('221 Bye');
+        sock.end();
+      } else say('502 Not implemented');
     }
-    inbox.push({ to, subject: m.subject, html: m.html, text: m.text });
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ id: `email_${inbox.length}` }));
   });
 });
-await new Promise<void>((r) => receiver.listen(CAPTURE_PORT, r));
+await new Promise<void>((r) => receiver.listen(CAPTURE_PORT, '127.0.0.1', r));
 const mailsTo = (to: string) => inbox.filter((m) => m.to === to);
 /** Email goes out just after the API answers: wait until `to` has `count` emails (or give up). */
 const waitForMail = async (to: string, count: number) => {
@@ -286,6 +321,7 @@ try {
   if (process.env.SMOKE_SERVER_LOG) {
     const log = readFileSync(process.env.SMOKE_SERVER_LOG, 'utf8');
     for (const m of inbox) assert.ok(!log.includes(codeIn(m)), 'a code appeared in the server log');
+    assert.ok(!/verification code/i.test(log) && !/\d{6} is your/.test(log), 'an email subject appeared in the server log');
     ok('no code appears in the server log');
   }
 
