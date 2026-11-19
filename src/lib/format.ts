@@ -36,7 +36,9 @@ export function plural(n: number, one: string, many = `${one}s`) {
 export const ACTIVITY_LABELS: Record<string, string> = {
   login: 'Signed in',
   password_changed: 'Changed password',
-  password_reset_requested: 'Asked for a password reset link',
+  password_reset_requested: 'Asked to reset password',
+  password_code_verified: 'Verified password reset code',
+  password_code_failed: 'Password reset email could not be sent',
   password_reset: 'Reset password with a reset link',
   password_link_created: 'Created a password reset link',
   email_changed: 'Changed sign-in email',

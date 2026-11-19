@@ -455,6 +455,14 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX password_help_requests_open_idx ON password_help_requests(user_id) WHERE resolved_at IS NULL;
   `,
+  // 9 — Email verification codes (OTP) for "forgot password", in the existing password_resets table:
+  //     kind 'otp' = 6-digit code (keyed hash), 'reset' = short-lived token after the code is verified,
+  //     'link' = reset link created by an administrator.
+  `
+  ALTER TABLE password_resets ADD COLUMN kind TEXT NOT NULL DEFAULT 'link' CHECK (kind IN ('link','otp','reset'));
+  ALTER TABLE password_resets ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;
+  CREATE INDEX password_resets_user_kind_idx ON password_resets(user_id, kind);
+  `,
 ];
 
 async function migrate() {

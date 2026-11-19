@@ -15,10 +15,10 @@ import {
   verifyPassword,
   type AuthedRequest,
 } from '../auth.ts';
-import { db, logActivity, now } from '../db.ts';
+import { db, logActivity, now, tx } from '../db.ts';
 import { saveFile, deleteFileRecord } from '../files.ts';
-import { appUrl, mailConfigured, sendMail } from '../mail.ts';
-import { createResetToken, openHelpRequest, resolveHelpRequests, RESET_TTL_MS, sha256 } from '../passwordResets.ts';
+import { mailConfigured, otpEmail, sendMail } from '../mail.ts';
+import { discardOtp, issueOtp, openHelpRequest, OTP_RESEND_COOLDOWN_MS, OTP_TTL_MS, otpCooldownLeft, resolveHelpRequests, RESET_TTL_MS, sha256, verifyOtp } from '../passwordResets.ts';
 import { h, HttpError } from '../http.ts';
 
 export const authRouter = Router();
@@ -158,55 +158,91 @@ function resetAllowed(key: string, max: number): boolean {
   return true;
 }
 
+const RATE_WINDOW_MS = 15 * 60 * 1000;
+const verifyRequests = new Map<string, number[]>();
+/** At most `max` verification tries per key in 15 minutes (on top of 5 wrong tries per code). */
+function verifyAllowed(key: string, max: number): boolean {
+  const t = Date.now();
+  const recent = (verifyRequests.get(key) || []).filter((x) => t - x < RATE_WINDOW_MS);
+  if (recent.length >= max) return false;
+  recent.push(t);
+  verifyRequests.set(key, recent);
+  return true;
+}
+
+const CODE_MINUTES = OTP_TTL_MS / 60000;
+const RESEND_SECONDS = OTP_RESEND_COOLDOWN_MS / 1000;
+
 /**
- * Emails a one-hour reset link. When this server cannot send email, the request
- * goes to the account's administrator instead (Users → Admins, Admins → Super
- * Admin). Always answers the same way, so it never reveals which emails have accounts.
+ * Step 1 (and "Resend code"): emails a six-digit verification code to the
+ * account. When this server cannot send email, the request goes to the
+ * account's administrator instead (Users → Admins, Admins → Super Admin).
+ * The answer is always the same, so it never reveals which emails have accounts.
  */
 authRouter.post(
   '/forgot-password',
   h(async (req: AuthedRequest, res) => {
     const email = String(req.body?.email || '').trim().toLowerCase();
-    if (!EMAIL_RE.test(email)) throw new HttpError(400, 'Enter a valid email address.');
+    if (!EMAIL_RE.test(email) || email.length > 200) throw new HttpError(400, 'Enter a valid email address.');
     if (!resetAllowed(`ip|${req.ip}`, 10)) throw new HttpError(429, 'Too many requests. Try again later.');
     // emailEnabled says only whether this server can send email at all — never whether the account exists.
     const emailEnabled = mailConfigured();
     const done = {
       ok: true,
       emailEnabled,
+      codeMinutes: CODE_MINUTES,
+      resendAfterSeconds: RESEND_SECONDS,
       message: emailEnabled
-        ? 'If an account uses this email, a link to reset the password has been sent to it. The link works for one hour.'
+        ? `If an account uses this email, we have sent it a 6-digit verification code. The code expires in ${CODE_MINUTES} minutes.`
         : 'If an account uses this email, your administrator has been asked to help you reset the password.',
     };
     const user = (await db.one<any>('SELECT * FROM users WHERE lower(email) = ?', [email])) as any;
-    if (!user || !user.active || user.password_hash === 'disabled' || !resetAllowed(`email|${email}`, 3)) return res.json(done);
+    if (!user || !user.active || user.password_hash === 'disabled') return res.json(done);
+    // Resend cooldown and an hourly cap per account; silent, like an unknown email.
+    if ((await otpCooldownLeft(user.id)) > 0 || !resetAllowed(`email|${email}`, 5)) return res.json(done);
     await logActivity(user.id, 'password_reset_requested', '');
-    const base = appUrl(req);
-    if (!emailEnabled || !base) {
-      if (!base) console.warn('[mail] APP_URL is not set; cannot build a password reset link.');
+    if (!emailEnabled) {
       await openHelpRequest(user.id, user.role);
       return res.json(done);
     }
-    const { token } = await createResetToken(user.id);
-    const link = `${base}/reset-password?token=${token}`;
-    const sent = await sendMail(
-      user.email,
-      'Reset your CertiGen password',
-      `Hello ${user.name},\n\nSomeone asked to reset the password of your CertiGen (Election Commission of Bhutan) account.\nOpen this link within one hour to choose a new password:\n\n${link}\n\nIf you did not ask for this, ignore this email; your password stays the same.`,
-      `<p>Hello ${escapeHtml(user.name)},</p><p>Someone asked to reset the password of your CertiGen (Election Commission of Bhutan) account. Open this link within one hour to choose a new password:</p><p><a href="${link}">Reset my password</a></p><p>If you did not ask for this, ignore this email; your password stays the same.</p>`
-    );
-    // Sending failed (wrong SMTP settings, mail server down): let the administrator help.
-    if (!sent) await openHelpRequest(user.id, user.role);
+    const { code } = await issueOtp(user.id);
+    const mail = otpEmail(user.name, code, CODE_MINUTES);
+    const sent = await sendMail(user.email, mail.subject, mail.text, mail.html);
+    if (!sent) {
+      // Delivery failed (wrong API key, unverified sender, provider down): the code is
+      // thrown away and the administrator is asked to help instead.
+      await discardOtp(user.id);
+      await openHelpRequest(user.id, user.role);
+      await logActivity(user.id, 'password_code_failed', '');
+    }
     res.json(done);
   })
 );
 
-/** Checks a reset link before the form is shown. */
+/** Step 2: checks the code and, when it is right, hands out a 10-minute reset token. */
+authRouter.post(
+  '/forgot-password/verify',
+  h(async (req: AuthedRequest, res) => {
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    const code = String(req.body?.code || '').replace(/\s+/g, '');
+    if (!EMAIL_RE.test(email) || !/^\d{6}$/.test(code)) throw new HttpError(400, 'Enter the 6-digit code from the email.');
+    if (!verifyAllowed(`ip|${req.ip}`, 30) || !verifyAllowed(`email|${email}`, 10)) throw new HttpError(429, 'Too many attempts. Wait 15 minutes, then ask for a new code.');
+    const user = (await db.one<any>('SELECT id, role, active, password_hash FROM users WHERE lower(email) = ?', [email])) as any;
+    const wrong = 'This code is wrong or has expired. Check the latest email, or ask for a new code.';
+    if (!user || !user.active || user.password_hash === 'disabled') throw new HttpError(400, wrong);
+    const r = await verifyOtp(user.id, code);
+    if (!r.ok) throw new HttpError(400, r.reason === 'locked' ? 'Too many wrong codes. Ask for a new code.' : wrong);
+    await logActivity(user.id, 'password_code_verified', '');
+    res.json({ ok: true, resetToken: r.resetToken, expiresAt: r.expiresAt, role: user.role });
+  })
+);
+
+/** Checks a reset token or administrator link before the new-password form is shown. */
 authRouter.get(
   '/reset-password/:token',
   h(async (req, res) => {
     const row = await db.one<{ expires_at: number; used_at: number | null; role: string }>(
-      'SELECT r.expires_at, r.used_at, u.role FROM password_resets r JOIN users u ON u.id = r.user_id WHERE r.token_hash = ?',
+      "SELECT r.expires_at, r.used_at, u.role FROM password_resets r JOIN users u ON u.id = r.user_id WHERE r.token_hash = ? AND r.kind IN ('link', 'reset')",
       [sha256(req.params.token)]
     );
     const valid = !!row && !row.used_at && row.expires_at > now();
@@ -214,26 +250,35 @@ authRouter.get(
   })
 );
 
+/** Step 3: sets the new password with a reset token (after the code) or an administrator link. */
 authRouter.post(
   '/reset-password',
   h(async (req, res) => {
     const token = String(req.body?.token || '');
     const next = String(req.body?.newPassword || '');
-    const row = token ? await db.one<{ user_id: string; expires_at: number; used_at: number | null }>('SELECT * FROM password_resets WHERE token_hash = ?', [sha256(token)]) : undefined;
-    if (!row || row.used_at || row.expires_at <= now()) throw new HttpError(400, 'This reset link has expired or was already used. Ask for a new one.');
+    const confirm = req.body?.confirmPassword;
+    if (confirm !== undefined && String(confirm) !== next) throw new HttpError(400, 'The passwords do not match.');
     const problem = passwordProblem(next);
     if (problem) throw new HttpError(400, problem);
-    const user = await getUserById(row.user_id);
-    if (!user || !user.active) throw new HttpError(400, 'This account is deactivated. Contact your administrator.');
-    await db.run('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?', [hashPassword(next), now(), user.id]);
-    await db.run('UPDATE password_resets SET used_at = ? WHERE user_id = ? AND used_at IS NULL', [now(), user.id]);
+    const user = await tx(async (q) => {
+      // Lock the token so it can be used only once, even with two requests at the same time.
+      const row = token
+        ? await q.one<{ user_id: string; expires_at: number; used_at: number | null }>(
+            "SELECT user_id, expires_at, used_at FROM password_resets WHERE token_hash = ? AND kind IN ('link', 'reset') FOR UPDATE",
+            [sha256(token)]
+          )
+        : undefined;
+      if (!row || row.used_at || Number(row.expires_at) <= now()) throw new HttpError(400, 'This reset link or session has expired or was already used. Start again to get a new code.');
+      const u = await q.one<{ id: string; role: string; active: number }>('SELECT id, role, active FROM users WHERE id = ?', [row.user_id]);
+      if (!u || !u.active) throw new HttpError(400, 'This account is deactivated. Contact your administrator.');
+      await q.run('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?', [hashPassword(next), now(), u.id]);
+      // Every code, token and link of the account stops working.
+      await q.run('UPDATE password_resets SET used_at = ? WHERE user_id = ? AND used_at IS NULL', [now(), u.id]);
+      return u;
+    });
     await resolveHelpRequests(user.id, user.id);
     await endAllSessionsForUser(user.id);
     await logActivity(user.id, 'password_reset', '');
     res.json({ ok: true, role: user.role });
   })
 );
-
-function escapeHtml(s: string) {
-  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
-}

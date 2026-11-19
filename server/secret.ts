@@ -34,3 +34,12 @@ export function decrypt(token: string): string {
   decipher.setAuthTag(Buffer.from(tag, 'base64'));
   return Buffer.concat([decipher.update(Buffer.from(data, 'base64')), decipher.final()]).toString('utf8');
 }
+
+/**
+ * Keyed one-way hash (HMAC-SHA256 with the server secret) for short secrets such
+ * as six-digit codes: unlike a plain hash, a copy of the database alone cannot
+ * be brute-forced back into the codes.
+ */
+export function keyedHash(purpose: string, value: string): string {
+  return crypto.createHmac('sha256', KEY).update(`${purpose}\0${value}`).digest('hex');
+}

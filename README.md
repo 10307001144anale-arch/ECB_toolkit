@@ -180,10 +180,12 @@ Each generated certificate gets a unique ID (e.g. `CG-7K3M-9QX2-PL4D`) stored in
 - Role checks on every route (`/api/superadmin/*` Super Admin only, `/api/admin/*` Admin only, `/api/user/*` User only) and per-portal sign-in. Users only see active clients they are linked to, their non-archived activities, published templates assigned to those activities, and only their own presets and batches. Template files are served only to accounts entitled to them.
 - Login throttling (8 failures per 15 minutes per IP + email).
 - **My profile** (all portals, sidebar → My profile): profile photo, name, sign-in email (needs the current password) and password.
-- **Forgot password** (link on every sign-in page): a one-hour, single-use reset link (only its SHA-256 hash is stored). The answer is the same whether or not the email has an account; requests are rate-limited; a reset ends all sessions.
-  - With email (`SMTP_*` and `APP_URL`, see `.env.example`) the link is emailed to the person.
-  - Without email (or when sending fails) the request goes to their administrator: Users → the Admins (Dashboard and Users page), Admins → the Super Admin (Dashboard and Admin accounts). The administrator clicks **Create reset link** and sends it to the person (e.g. by chat), or sets a new password. Any account's row menu also has **Create reset link**.
-  - Super Admin passwords without email: `npm run create-admin -- email "Name"` on the server.
+- **Forgot password** (link on every sign-in page, all three portals): email → 6-digit code → new password.
+  - The code is emailed with **Resend** (`RESEND_API_KEY`, `MAIL_FROM`; SMTP also works). It is generated with `crypto.randomInt`, stored only as an HMAC-SHA256 (keyed with `APP_SECRET`), expires after **5 minutes**, works **once**, and is locked after **5 wrong tries**. A new code replaces the old one; **Resend code** has a 60-second cooldown.
+  - A correct code is exchanged for a **10-minute reset token** (random 256-bit, SHA-256 stored). The new password must have 10+ characters with letters and numbers and match the confirmation; it is hashed with scrypt like every password. Afterwards every code, token and link of the account stops working and all its sessions end.
+  - Anti-abuse: the same answer whether or not the email has an account; 10 requests/hour per IP and 5 per email; 30 code checks per 15 minutes per IP and 10 per email; codes never appear in API responses or logs.
+  - When email is not configured or delivery fails, the request goes to the account's administrator (Users → Admins, Admins → Super Admin), who can **Create reset link** (1 hour) or set a password. Super Admin without email: `npm run create-admin -- email "Name"`.
+  - Check the email settings with `npm run test-email -- you@example.com`.
 - Uploads are checked by their real content (magic bytes) and size, not by the file name.
 - Microsoft and Google tokens are encrypted at rest (AES-256-GCM with `APP_SECRET`), stored per account, and never sent to the browser. Disconnecting deletes them (Google tokens are also revoked).
 - Production adds a Content-Security-Policy, HSTS and other security headers.
@@ -311,6 +313,15 @@ npm run test:api                              # in a second terminal
 ```
 
 The first account (`ADMIN_EMAIL`) is the **Super Admin**; the test creates an Admin, Users and Activities itself.
+
+Forgot password with emailed codes (27 checks: delivery, hashing, expiry, single use, resend cooldown, wrong-code lock, rate limits, delivery failure, no codes in logs). The server uses the real Resend SDK; `RESEND_BASE_URL` points it at a small receiver inside the test that reads the email like an inbox:
+
+```bash
+# fresh, empty test database
+API_ONLY=true PORT=3999 ADMIN_EMAIL=admin@test.local ADMIN_PASSWORD=AdminPass123 \
+  RESEND_API_KEY=re_test RESEND_BASE_URL=http://localhost:55498 npx tsx server.ts > server.log
+OTP_CAPTURE_PORT=55498 SMOKE_DB_URL="$SUPABASE_DB_URL" SMOKE_SERVER_LOG=server.log npm run test:otp
+```
 
 ## Troubleshooting
 

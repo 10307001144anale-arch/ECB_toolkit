@@ -24,5 +24,10 @@ const ok = await sendMail(
   'This is a test from CertiGen. If you can read it, "Forgot password" emails will be delivered.',
   '<p>This is a test from CertiGen. If you can read it, “Forgot password” emails will be delivered.</p>'
 );
-console.log(ok ? `Sent. Check the inbox (and spam folder) of ${to}.` : 'Sending failed — see the [mail] message above. Check SMTP_USER / SMTP_PASSWORD (for Gmail use an App password).');
-process.exit(ok ? 0 : 1);
+console.log(
+  ok
+    ? `Sent. Check the inbox (and spam folder) of ${to}.`
+    : 'Sending failed — see the [mail] message above. Check RESEND_API_KEY / MAIL_FROM (or the SMTP_* settings).'
+);
+// Let Node exit on its own: process.exit() while the network handles close crashes libuv on Windows.
+process.exitCode = ok ? 0 : 1;
