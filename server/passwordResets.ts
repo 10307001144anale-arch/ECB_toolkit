@@ -65,6 +65,19 @@ export async function issueOtp(userId: string): Promise<{ code: string; expiresA
   return { code, expiresAt: t + OTP_TTL_MS };
 }
 
+/**
+ * Cancels every pending code, reset token and reset link of an account — used
+ * when its registered email changes or it is deactivated, so a code sent to an
+ * old inbox can no longer be used.
+ */
+export async function invalidateResets(userId: string) {
+  await tx(async (q) => {
+    // Codes are removed (not just marked used) so the resend cooldown restarts for the new address.
+    await q.run("DELETE FROM password_resets WHERE user_id = ? AND kind = 'otp'", [userId]);
+    await q.run('UPDATE password_resets SET used_at = ? WHERE user_id = ? AND used_at IS NULL', [now(), userId]);
+  });
+}
+
 /** Removes a code that could not be emailed. */
 export async function discardOtp(userId: string) {
   await db.run("DELETE FROM password_resets WHERE user_id = ? AND kind = 'otp'", [userId]);

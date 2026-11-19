@@ -18,7 +18,8 @@ import {
 import { db, logActivity, now, tx } from '../db.ts';
 import { saveFile, deleteFileRecord } from '../files.ts';
 import { mailConfigured, otpEmail, sendMail } from '../mail.ts';
-import { discardOtp, issueOtp, openHelpRequest, OTP_RESEND_COOLDOWN_MS, OTP_TTL_MS, otpCooldownLeft, resolveHelpRequests, RESET_TTL_MS, sha256, verifyOtp } from '../passwordResets.ts';
+import { keyedHash } from '../secret.ts';
+import { discardOtp, invalidateResets, issueOtp, OTP_RESEND_COOLDOWN_MS, OTP_TTL_MS, otpCooldownLeft, resolveHelpRequests, RESET_TTL_MS, sha256, verifyOtp } from '../passwordResets.ts';
 import { h, HttpError } from '../http.ts';
 
 export const authRouter = Router();
@@ -115,6 +116,7 @@ authRouter.post(
     if (email === row.email.toLowerCase()) throw new HttpError(400, 'This is already your email address.');
     if (await db.one('SELECT 1 FROM users WHERE lower(email) = ? AND id <> ?', [email, row.id])) throw new HttpError(409, 'Another account already uses this email address.');
     await db.run('UPDATE users SET email = ?, updated_at = ? WHERE id = ?', [email, now(), row.id]);
+    await invalidateResets(row.id); // codes sent to the old inbox stop working
     await logActivity(row.id, 'email_changed', `${row.email} → ${email}`);
     res.json({ user: toPublicUser((await getUserById(row.id))!) });
   })
@@ -175,16 +177,18 @@ const RESEND_SECONDS = OTP_RESEND_COOLDOWN_MS / 1000;
 
 /**
  * Step 1 (and "Resend code"): emails a six-digit verification code to the
- * account. When this server cannot send email, the request goes to the
- * account's administrator instead (Users → Admins, Admins → Super Admin).
- * The answer is always the same, so it never reveals which emails have accounts.
+ * account's registered email — the address stored in `users`, never one sent by
+ * the browser — for every role. Only someone with access to that inbox can go
+ * on. The answer is the same whether or not the email has an account, and is
+ * sent before the email goes out, so its timing reveals nothing either.
  */
 authRouter.post(
   '/forgot-password',
   h(async (req: AuthedRequest, res) => {
     const email = String(req.body?.email || '').trim().toLowerCase();
     if (!EMAIL_RE.test(email) || email.length > 200) throw new HttpError(400, 'Enter a valid email address.');
-    if (!resetAllowed(`ip|${req.ip}`, 10)) throw new HttpError(429, 'Too many requests. Try again later.');
+    // Per IP generous enough for an office behind one address; per email (below) is the strict limit.
+    if (!resetAllowed(`ip|${req.ip}`, 30)) throw new HttpError(429, 'Too many requests. Try again later.');
     // emailEnabled says only whether this server can send email at all — never whether the account exists.
     const emailEnabled = mailConfigured();
     const done = {
@@ -194,28 +198,28 @@ authRouter.post(
       resendAfterSeconds: RESEND_SECONDS,
       message: emailEnabled
         ? `If an account uses this email, we have sent it a 6-digit verification code. The code expires in ${CODE_MINUTES} minutes.`
-        : 'If an account uses this email, your administrator has been asked to help you reset the password.',
+        : 'Password recovery by email is not available on this server yet. Contact your administrator.',
     };
+    // Without email delivery there is no way to prove ownership of the inbox, so nothing happens.
+    if (!emailEnabled) return res.json(done);
     const user = (await db.one<any>('SELECT * FROM users WHERE lower(email) = ?', [email])) as any;
     if (!user || !user.active || user.password_hash === 'disabled') return res.json(done);
     // Resend cooldown and an hourly cap per account; silent, like an unknown email.
     if ((await otpCooldownLeft(user.id)) > 0 || !resetAllowed(`email|${email}`, 5)) return res.json(done);
     await logActivity(user.id, 'password_reset_requested', '');
-    if (!emailEnabled) {
-      await openHelpRequest(user.id, user.role);
-      return res.json(done);
-    }
     const { code } = await issueOtp(user.id);
-    const mail = otpEmail(user.name, code, CODE_MINUTES);
-    const sent = await sendMail(user.email, mail.subject, mail.text, mail.html);
-    if (!sent) {
-      // Delivery failed (wrong API key, unverified sender, provider down): the code is
-      // thrown away and the administrator is asked to help instead.
-      await discardOtp(user.id);
-      await openHelpRequest(user.id, user.role);
-      await logActivity(user.id, 'password_code_failed', '');
-    }
+    const recipient: string = user.email; // the registered address from the database
     res.json(done);
+    // Deliver after answering: waiting for the email provider would make real accounts answer slower.
+    const mail = otpEmail(user.name, code, CODE_MINUTES);
+    void sendMail(recipient, mail.subject, mail.text, mail.html)
+      .then(async (sent) => {
+        if (sent) return;
+        // Delivery failed (wrong API key, unverified sender, provider down): the code is thrown away.
+        await discardOtp(user.id);
+        await logActivity(user.id, 'password_code_failed', '');
+      })
+      .catch((e) => console.warn('[mail] password code delivery:', e.message));
   })
 );
 
@@ -229,7 +233,10 @@ authRouter.post(
     if (!verifyAllowed(`ip|${req.ip}`, 30) || !verifyAllowed(`email|${email}`, 10)) throw new HttpError(429, 'Too many attempts. Wait 15 minutes, then ask for a new code.');
     const user = (await db.one<any>('SELECT id, role, active, password_hash FROM users WHERE lower(email) = ?', [email])) as any;
     const wrong = 'This code is wrong or has expired. Check the latest email, or ask for a new code.';
-    if (!user || !user.active || user.password_hash === 'disabled') throw new HttpError(400, wrong);
+    if (!user || !user.active || user.password_hash === 'disabled') {
+      keyedHash('password-otp', `none:${code}`); // same work as a real check, so timing reveals nothing
+      throw new HttpError(400, wrong);
+    }
     const r = await verifyOtp(user.id, code);
     if (!r.ok) throw new HttpError(400, r.reason === 'locked' ? 'Too many wrong codes. Ask for a new code.' : wrong);
     await logActivity(user.id, 'password_code_verified', '');

@@ -299,12 +299,13 @@ r = await new Client().req('GET', '/api/auth/reset-password/not-a-real-token'); 
 r = await new Client().req('POST', '/api/auth/reset-password', { token: 'not-a-real-token', newPassword: 'NewPass12345' }); assert.equal(r.status, 400); ok('bogus reset token rejected');
 r = await new Client().req('POST', '/api/auth/forgot-password', { email: 'ada2@test.local' }); assert.equal(r.json.message, sameMsg); ok('forgot password answers the same for real accounts');
 // Email is not configured on the test server: the request goes to the administrator instead.
-r = await sa.req('GET', '/api/superadmin/password-requests'); assert.ok(r.json.some((x: any) => x.email === 'ada2@test.local')); ok('Admin\'s forgot-password request reaches the Super Admin');
+assert.equal(r.json.emailEnabled, false); assert.match(r.json.message, /not available/);
+r = await sa.req('GET', '/api/superadmin/password-requests'); assert.ok(!r.json.some((x: any) => x.email === 'ada2@test.local')); ok('without email, forgot password does not hand the account to an administrator');
 r = await ad.req('GET', '/api/admin/password-requests'); assert.ok(!r.json.some((x: any) => x.email === 'ada2@test.local')); ok('Admin requests are not shown to Admins');
 const adaId = r.json && (await sa.req('GET', '/api/superadmin/admins')).json.find((x: any) => x.email === 'ada2@test.local').id;
 r = await ad.req('POST', `/api/superadmin/password-requests/${adaId}/link`); assert.ok([401, 403].includes(r.status)); ok('only the Super Admin can create an Admin reset link');
 r = await sa.req('POST', `/api/superadmin/password-requests/${adaId}/link`); assert.match(r.json.link, /\/reset-password\?token=/); const token = new URL(r.json.link).searchParams.get('token')!; ok('Super Admin creates a reset link');
-r = await sa.req('GET', '/api/superadmin/password-requests'); assert.ok(!r.json.some((x: any) => x.email === 'ada2@test.local')); ok('creating the link closes the request');
+r = await sa.req('GET', '/api/superadmin/password-requests'); assert.ok(!r.json.some((x: any) => x.email === 'ada2@test.local')); ok('no open request after the link');
 r = await new Client().req('GET', `/api/auth/reset-password/${token}`); assert.equal(r.json.valid, true); assert.equal(r.json.role, 'admin'); ok('reset link is valid');
 r = await new Client().req('POST', '/api/auth/reset-password', { token, newPassword: 'short' }); assert.equal(r.status, 400); ok('weak new password rejected');
 r = await new Client().req('POST', '/api/auth/reset-password', { token, newPassword: 'ResetPass789' }); assert.equal(r.json.role, 'admin'); ok('password reset with the link');
@@ -316,9 +317,10 @@ r = await ad2.req('POST', '/api/admin/users', { name: 'Reset Tester', email: 're
 const resetUser = new Client(); await resetUser.req('POST', '/api/auth/login', { email: 'reset@test.local', password: 'ClientPass123', portal: 'user' });
 r = await new Client().req('POST', '/api/auth/forgot-password', { email: 'reset@test.local' }); assert.equal(r.json.emailEnabled, false);
 r = await new Client().req('POST', '/api/auth/forgot-password', { email: 'a@test.local' }); assert.equal(r.status, 200);
-r = await ad2.req('GET', '/api/admin/password-requests'); const reqA = r.json.find((x: any) => x.email === 'reset@test.local'); assert.ok(!r.json.some((x: any) => x.email === 'a@test.local'), 'inactive accounts are ignored'); assert.ok(reqA); ok("User's forgot-password request reaches the Admins");
+r = await ad2.req('GET', '/api/admin/password-requests'); assert.ok(!r.json.some((x: any) => x.email === 'reset@test.local' || x.email === 'a@test.local')); ok("a User's forgot-password request does not reach the Admins");
+const resetId = (await ad2.req('GET', '/api/admin/users')).json.find((x: any) => x.email === 'reset@test.local').id;
 r = await resetUser.req('GET', '/api/admin/password-requests'); assert.ok([401, 403].includes(r.status)); ok('Users cannot see password requests');
-r = await ad2.req('POST', `/api/admin/password-requests/${reqA.userId}/dismiss`); r = await ad2.req('GET', '/api/admin/password-requests'); assert.ok(!r.json.some((x: any) => x.email === 'reset@test.local')); ok('Admin can dismiss a request');
+r = await ad2.req('POST', `/api/admin/password-requests/${resetId}/link`); assert.match(r.json.link, /reset-password\?token=/); ok('Admins keep their account tool to create a reset link');
 
 r = await sa.req('POST', '/api/auth/logout', {});
 r = await sa.req('GET', '/api/superadmin/stats'); assert.equal(r.status, 401); ok('logout ends session');

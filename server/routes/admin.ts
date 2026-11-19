@@ -3,7 +3,7 @@ import { createUser, endAllSessionsForUser, getUserByEmail, hashPassword, passwo
 import { db, logActivity, newId, now } from '../db.ts';
 import { h, HttpError, isEmail, optionalString, requireString } from '../http.ts';
 import { saveFile } from '../files.ts';
-import { passwordHelpRoutes, resolveHelpRequests } from '../passwordResets.ts';
+import { invalidateResets, passwordHelpRoutes, resolveHelpRequests } from '../passwordResets.ts';
 import { getTemplateRow, parseLayout, toSummary, type TemplateRow } from '../templates.ts';
 import type { ActivityRecord, ActivityStatus, UserAccount } from '../../shared/types.ts';
 
@@ -216,6 +216,7 @@ adminRouter.put(
     const logo = b.logoFileId !== undefined ? await logoFile(b.logoFileId) : r.logo_file_id;
     const notes = b.notes !== undefined ? optionalString(b.notes, 2000) : r.notes;
     const active = b.active !== undefined ? (b.active ? 1 : 0) : r.active;
+    if (email !== r.email || !active) await invalidateResets(r.id);
     await db.run('UPDATE users SET name = ?, email = ?, organisation = ?, logo_file_id = ?, notes = ?, active = ?, updated_at = ? WHERE id = ?', [
       name,
       email,

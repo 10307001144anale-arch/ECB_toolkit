@@ -197,15 +197,18 @@ export function ForgotPasswordPage() {
     <Frame portal={portal} title={title}>
       {step === 'admin' ? (
         <div className="space-y-3 text-sm text-slate-700">
-          {portal === 'superadmin' ? (
-            <Alert tone="warning" title="Email is not set up on this server yet">
-              Super Admin passwords can then only be reset on the server: run <code className="rounded bg-white px-1">npm run create-admin -- your@email "Your Name"</code>, or set up email (Resend) for CertiGen.
-            </Alert>
-          ) : (
-            <Alert tone="success" title="Request sent to your administrator">
-              {message} They will send you a link to choose a new password{portal === 'admin' ? ' (the Super Admin handles Admin accounts)' : ''}.
-            </Alert>
-          )}
+          <Alert tone="warning" title="Email recovery is not available yet">
+            {message}{' '}
+            {portal === 'superadmin' ? (
+              <>
+                Super Admin passwords can be reset on the server with <code className="rounded bg-white px-1">npm run create-admin -- your@email "Your Name"</code>.
+              </>
+            ) : portal === 'admin' ? (
+              'The Super Admin can set a new password for Admin accounts.'
+            ) : (
+              'An Admin can set a new password for your account.'
+            )}
+          </Alert>
         </div>
       ) : step === 'code' ? (
         <form onSubmit={verify} className="space-y-4">

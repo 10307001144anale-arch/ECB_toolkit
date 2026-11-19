@@ -5,7 +5,7 @@ import { h, HttpError, isEmail, optionalString, requireString } from '../http.ts
 import { attachLayoutFiles, saveFile, type FileKind } from '../files.ts';
 import { BUCKET, deleteObjects, putObject } from '../storage.ts';
 import { checkReferenceAlignment, emptyLayout, publishProblems, sanitizeLayout } from '../../shared/layout.ts';
-import { passwordHelpRoutes, resolveHelpRequests } from '../passwordResets.ts';
+import { invalidateResets, passwordHelpRoutes, resolveHelpRequests } from '../passwordResets.ts';
 import { getTemplateRow, layoutJson, syncCoverImage, parseLayout, templateUsage, toDetail, toSummary, toVersion, type TemplateRow, type VersionRow } from '../templates.ts';
 import { batchToRecord, BATCH_SELECT } from './user.ts';
 
@@ -399,6 +399,7 @@ adminRouter.put(
     }
     const organisation = req.body?.organisation !== undefined ? optionalString(req.body.organisation, 200) || null : r.organisation;
     const active = req.body?.active !== undefined ? (req.body.active ? 1 : 0) : r.active;
+    if (email !== r.email || !active) await invalidateResets(r.id);
     await db.run('UPDATE users SET name = ?, email = ?, organisation = ?, active = ?, updated_at = ? WHERE id = ?', [name, email, organisation, active, now(), r.id]);
     if (!active) await endAllSessionsForUser(r.id);
     await logActivity(req.user!.id, r.active !== active ? (active ? 'admin_activated' : 'admin_deactivated') : 'admin_updated', name);

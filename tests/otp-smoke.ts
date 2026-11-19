@@ -42,6 +42,12 @@ const receiver = http.createServer((req, res) => {
 });
 await new Promise<void>((r) => receiver.listen(CAPTURE_PORT, r));
 const mailsTo = (to: string) => inbox.filter((m) => m.to === to);
+/** Email goes out just after the API answers: wait until `to` has `count` emails (or give up). */
+const waitForMail = async (to: string, count: number) => {
+  for (let i = 0; i < 50 && mailsTo(to).length < count; i++) await new Promise((r) => setTimeout(r, 100));
+  return mailsTo(to).length;
+};
+const settle = () => new Promise((r) => setTimeout(r, 800));
 const codeIn = (m: Mail) => m.subject.match(/^(\d{6}) /)![1];
 const lastCode = (to: string) => codeIn(mailsTo(to).at(-1)!);
 
@@ -105,7 +111,7 @@ try {
   assert.equal(r.json.message, generic);
   assert.equal(r.json.emailEnabled, true);
   assert.equal(r.json.resendAfterSeconds, 60);
-  assert.equal(mailsTo('pema@test.local').length, 1);
+  assert.equal(await waitForMail('pema@test.local', 1), 1);
   ok('registered email: same answer, one email sent to the registered address');
   const code1 = lastCode('pema@test.local');
   assert.match(code1, /^\d{6}$/);
@@ -125,6 +131,7 @@ try {
   // ---------------------------------------------------------------- 2. resend cooldown
   r = await anon().req('POST', '/api/auth/forgot-password', { email: 'pema@test.local' });
   assert.equal(r.status, 200);
+  await settle();
   assert.equal(mailsTo('pema@test.local').length, 1);
   ok('resend within the 60-second cooldown sends nothing');
 
@@ -178,6 +185,7 @@ try {
 
   // ---------------------------------------------------------------- 5. expiry and replacement
   await anon().req('POST', '/api/auth/forgot-password', { email: 'karma@test.local' });
+  await waitForMail('karma@test.local', 1);
   const karmaA = lastCode('karma@test.local');
   await db.query("UPDATE password_resets SET expires_at = $2 WHERE user_id = $1 AND kind = 'otp'", [await userId('karma@test.local'), Date.now() - 1000]);
   r = await anon().req('POST', '/api/auth/forgot-password/verify', { email: 'karma@test.local', code: karmaA });
@@ -185,9 +193,11 @@ try {
   ok('expired code rejected');
   await skipCooldown('karma@test.local');
   await anon().req('POST', '/api/auth/forgot-password', { email: 'karma@test.local' });
+  await waitForMail('karma@test.local', 2);
   const karmaB = lastCode('karma@test.local');
   await skipCooldown('karma@test.local');
   await anon().req('POST', '/api/auth/forgot-password', { email: 'karma@test.local' });
+  await waitForMail('karma@test.local', 3);
   const karmaC = lastCode('karma@test.local');
   assert.equal(mailsTo('karma@test.local').length, 3);
   ok('resend after the cooldown sends a fresh code');
@@ -204,6 +214,7 @@ try {
 
   // ---------------------------------------------------------------- 6. brute force
   await anon().req('POST', '/api/auth/forgot-password', { email: 'sonam@test.local' });
+  await waitForMail('sonam@test.local', 1);
   const sonam = lastCode('sonam@test.local');
   const bad = sonam === '111111' ? '222222' : '111111';
   for (let i = 1; i <= 4; i++) {
@@ -226,14 +237,52 @@ try {
   r = await anon().req('POST', '/api/auth/forgot-password', { email: 'fail@test.local' });
   assert.equal(r.status, 200);
   assert.equal(r.json.message, generic);
+  await settle();
   const failRows = await db.query("SELECT count(*)::int AS n FROM password_resets WHERE user_id = $1 AND kind = 'otp'", [await userId('fail@test.local')]);
   assert.equal(failRows.rows[0].n, 0);
   ok('delivery failure: same answer, the unsent code is discarded');
   r = await ad.req('GET', '/api/admin/password-requests');
-  assert.ok(r.json.some((x: any) => x.email === 'fail@test.local'));
-  ok('delivery failure: the Admin is asked to help instead');
+  assert.ok(!r.json.some((x: any) => x.email === 'fail@test.local'));
+  ok('delivery failure: the account is not handed to an administrator');
 
-  // ---------------------------------------------------------------- 8. codes never in logs
+  // ---------------------------------------------------------------- 8. ownership: every role, registered email only
+  r = await anon().req('POST', '/api/auth/forgot-password', { email: 'OTPADMIN@test.local' });
+  assert.equal(await waitForMail('otpadmin@test.local', 1), 1);
+  ok('Admin accounts get the code at their registered email (case-insensitive)');
+  r = await anon().req('POST', '/api/auth/forgot-password', { email: 'admin@test.local' });
+  assert.equal(await waitForMail('admin@test.local', 1), 1);
+  ok('Super Admin accounts get the code at their registered email');
+  // A different recipient, role or id sent by the browser is ignored.
+  const before = inbox.length;
+  await skipCooldown('karma@test.local');
+  r = await anon().req('POST', '/api/auth/forgot-password', { email: 'karma@test.local', to: 'attacker@evil.test', recipient: 'attacker@evil.test', role: 'superadmin', userId: 'x' });
+  await waitForMail('karma@test.local', 4);
+  assert.ok(inbox.length > before && !inbox.slice(before).some((m) => m.to !== 'karma@test.local'));
+  ok('extra recipient, role or id fields from the browser are ignored');
+  // Changing the registered email cancels a code sent to the old inbox.
+  const oldCode = lastCode('karma@test.local');
+  const karmaId = await userId('karma@test.local');
+  r = await ad.req('PUT', `/api/admin/users/${karmaId}`, { email: 'karma.new@test.local' });
+  assert.equal(r.status, 200);
+  r = await anon().req('POST', '/api/auth/forgot-password/verify', { email: 'karma.new@test.local', code: oldCode });
+  assert.equal(r.status, 400);
+  ok('after an email change, a code sent to the old inbox no longer works');
+  await anon().req('POST', '/api/auth/forgot-password', { email: 'karma.new@test.local' });
+  assert.equal(await waitForMail('karma.new@test.local', 1), 1);
+  ok('the next code goes to the new registered email');
+  // A deactivated account gets nothing, and its pending code stops working.
+  const newCode = lastCode('karma.new@test.local');
+  r = await ad.req('PUT', `/api/admin/users/${karmaId}`, { active: false });
+  r = await anon().req('POST', '/api/auth/forgot-password/verify', { email: 'karma.new@test.local', code: newCode });
+  assert.equal(r.status, 400);
+  await db.query('UPDATE password_resets SET created_at = created_at - 120000 WHERE user_id = $1', [karmaId]);
+  const n = inbox.length;
+  await anon().req('POST', '/api/auth/forgot-password', { email: 'karma.new@test.local' });
+  await settle();
+  assert.equal(inbox.length, n);
+  ok('deactivated accounts get no code, and their pending code stops working');
+
+  // ---------------------------------------------------------------- 9. codes never in logs
   if (process.env.SMOKE_SERVER_LOG) {
     const log = readFileSync(process.env.SMOKE_SERVER_LOG, 'utf8');
     for (const m of inbox) assert.ok(!log.includes(codeIn(m)), 'a code appeared in the server log');

@@ -183,8 +183,11 @@ Each generated certificate gets a unique ID (e.g. `CG-7K3M-9QX2-PL4D`) stored in
 - **Forgot password** (link on every sign-in page, all three portals): email → 6-digit code → new password.
   - The code is emailed with **Resend** (`RESEND_API_KEY`, `MAIL_FROM`; SMTP also works). It is generated with `crypto.randomInt`, stored only as an HMAC-SHA256 (keyed with `APP_SECRET`), expires after **5 minutes**, works **once**, and is locked after **5 wrong tries**. A new code replaces the old one; **Resend code** has a 60-second cooldown.
   - A correct code is exchanged for a **10-minute reset token** (random 256-bit, SHA-256 stored). The new password must have 10+ characters with letters and numbers and match the confirmation; it is hashed with scrypt like every password. Afterwards every code, token and link of the account stops working and all its sessions end.
-  - Anti-abuse: the same answer whether or not the email has an account; 10 requests/hour per IP and 5 per email; 30 code checks per 15 minutes per IP and 10 per email; codes never appear in API responses or logs.
-  - When email is not configured or delivery fails, the request goes to the account's administrator (Users → Admins, Admins → Super Admin), who can **Create reset link** (1 hour) or set a password. Super Admin without email: `npm run create-admin -- email "Name"`.
+  - Anti-abuse: the same answer whether or not the email has an account; 30 requests/hour per IP and 5 per email; 30 code checks per 15 minutes per IP and 10 per email; codes never appear in API responses or logs.
+  - **Inbox ownership is required, for every role.** The account is found by its registered email in `users` (case-insensitive) and the code goes only to that stored address — recipient, role or id fields sent by the browser are ignored. There is no other self-service way in: without working email (or when delivery fails) nothing is sent and nobody else is asked to approve it.
+  - Changing an account's email (My profile, Admin → Users, Super Admin → Admin accounts) or deactivating it cancels every pending code, token and link, so a code sent to an old inbox stops working.
+  - The answer is sent before the email goes out, and unknown emails do the same work as real ones, so response times do not reveal which emails have accounts.
+  - Administrators keep their normal account tools (**Set new password**, **Create reset link**). Super Admin without email: `npm run create-admin -- email "Name"`.
   - Check the email settings with `npm run test-email -- you@example.com`.
 - Uploads are checked by their real content (magic bytes) and size, not by the file name.
 - Microsoft and Google tokens are encrypted at rest (AES-256-GCM with `APP_SECRET`), stored per account, and never sent to the browser. Disconnecting deletes them (Google tokens are also revoked).
@@ -314,7 +317,7 @@ npm run test:api                              # in a second terminal
 
 The first account (`ADMIN_EMAIL`) is the **Super Admin**; the test creates an Admin, Users and Activities itself.
 
-Forgot password with emailed codes (27 checks: delivery, hashing, expiry, single use, resend cooldown, wrong-code lock, rate limits, delivery failure, no codes in logs). The server uses the real Resend SDK; `RESEND_BASE_URL` points it at a small receiver inside the test that reads the email like an inbox:
+Forgot password with emailed codes (33 checks: delivery, hashing, expiry, single use, resend cooldown, wrong-code lock, rate limits, delivery failure, every role, registered email only, email change and deactivation, no codes in logs). The server uses the real Resend SDK; `RESEND_BASE_URL` points it at a small receiver inside the test that reads the email like an inbox:
 
 ```bash
 # fresh, empty test database
